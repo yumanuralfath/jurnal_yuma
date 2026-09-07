@@ -1,38 +1,48 @@
 import type { PageServerLoad } from './$types';
-import { listRecentNotes } from '$lib/server/db';
+import { getNotesCounts, listAvailableMonths, listMonthNotesSummary } from '$lib/server/db';
 import { dateFromISO, isoFromDate, monthNameFull } from '$lib/dateUtils';
 import { getSyncStatus } from '$lib/syncStatus';
 
-export const load: PageServerLoad = async () => {
-	const notes = await listRecentNotes(200);
-	const grouped = new Map<string, typeof notes>();
+export const load: PageServerLoad = async ({ url }) => {
+	const today = isoFromDate(new Date());
+	const currentMonth = today.slice(0, 7); // "YYYY-MM"
 
-	for (const note of notes) {
-		const d = dateFromISO(note.date);
-		const key = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`;
-		const list = grouped.get(key) ?? [];
-		list.push(note);
-		grouped.set(key, list);
+	const availableMonths = await listAvailableMonths();
+
+	// Default ke bulan ini jika ada catatan atau belum ada pilihan, atau gunakan bulan yang diminta
+	const requestedMonth = url.searchParams.get('month');
+	let selectedMonth = requestedMonth || currentMonth;
+
+	// Jika bulan yang diminta tidak ada dan tidak ada catatan bulan ini, pakai bulan terbaru yang tersedia
+	if (!requestedMonth && !availableMonths.includes(selectedMonth) && availableMonths.length > 0) {
+		selectedMonth = availableMonths[0];
 	}
 
-	const sections = [...grouped.entries()].map(([key, items]) => {
-		const d = dateFromISO(`${key}-01`);
-		return {
-			key,
-			label: `${monthNameFull(d)} ${d.getFullYear()}`,
-			notes: items.map((n) => ({
-				...n,
-				syncStatus: getSyncStatus(n)
-			}))
-		};
-	});
+	const notesRaw = await listMonthNotesSummary(selectedMonth);
+	const notes = notesRaw.map((n) => ({
+		...n,
+		syncStatus: getSyncStatus(n)
+	}));
 
-	const counts = {
-		total: notes.length,
-		synced: notes.filter((n) => getSyncStatus(n) === 'synced').length,
-		dirty: notes.filter((n) => getSyncStatus(n) === 'dirty').length,
-		never: notes.filter((n) => getSyncStatus(n) === 'never').length
+	const counts = await getNotesCounts();
+
+	// Navigasi bulan (availableMonths diurutkan DESC: e.g. [2026-09, 2026-08, ...])
+	const monthIdx = availableMonths.indexOf(selectedMonth);
+	const prevMonth = monthIdx >= 0 && monthIdx < availableMonths.length - 1 ? availableMonths[monthIdx + 1] : null;
+	const nextMonth = monthIdx > 0 ? availableMonths[monthIdx - 1] : null;
+
+	const d = dateFromISO(`${selectedMonth}-01`);
+	const monthLabel = `${monthNameFull(d)} ${d.getFullYear()}`;
+
+	return {
+		selectedMonth,
+		monthLabel,
+		isCurrentMonth: selectedMonth === currentMonth,
+		notes,
+		availableMonths,
+		prevMonth,
+		nextMonth,
+		counts,
+		today
 	};
-
-	return { sections, counts, today: isoFromDate(new Date()) };
 };

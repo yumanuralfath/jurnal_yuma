@@ -201,6 +201,84 @@
 		}
 	}
 
+	let uploadingImage = $state(false);
+	let textareaEl = $state<HTMLTextAreaElement | null>(null);
+
+	async function uploadImageFile(file: File) {
+		if (!file.type.startsWith('image/')) return;
+		uploadingImage = true;
+		const placeholder = `\n![Mengupload ${file.name}...]()\n`;
+
+		const el = textareaEl;
+		const startPos = el ? el.selectionStart : noteContent.length;
+		const endPos = el ? el.selectionEnd : noteContent.length;
+
+		const prevContent = noteContent;
+		noteContent = prevContent.slice(0, startPos) + placeholder + prevContent.slice(endPos);
+
+		try {
+			const form = new FormData();
+			form.append('file', file);
+
+			const res = await fetch('/api/upload', {
+				method: 'POST',
+				body: form
+			});
+
+			const json = await res.json();
+			if (!res.ok) throw new Error(json.error ?? 'Gagal upload gambar');
+
+			const markdownImage = `\n![](${json.url})\n`;
+			noteContent = noteContent.replace(placeholder, markdownImage);
+			status = 'Gambar berhasil diunggah ke Cloudinary dan disisipkan.';
+		} catch (e) {
+			noteContent = noteContent.replace(placeholder, '');
+			status = e instanceof Error ? e.message : 'Gagal upload gambar';
+		} finally {
+			uploadingImage = false;
+		}
+	}
+
+	function handleFileInput(e: Event) {
+		const target = e.target as HTMLInputElement;
+		const file = target.files?.[0];
+		if (file) {
+			uploadImageFile(file);
+			target.value = '';
+		}
+	}
+
+	function handlePaste(e: ClipboardEvent) {
+		const items = e.clipboardData?.items;
+		if (!items) return;
+
+		for (let i = 0; i < items.length; i++) {
+			const item = items[i];
+			if (item.type.startsWith('image/')) {
+				const file = item.getAsFile();
+				if (file) {
+					e.preventDefault();
+					uploadImageFile(file);
+					return;
+				}
+			}
+		}
+	}
+
+	function handleDrop(e: DragEvent) {
+		const files = e.dataTransfer?.files;
+		if (!files || files.length === 0) return;
+
+		for (let i = 0; i < files.length; i++) {
+			const file = files[i];
+			if (file.type.startsWith('image/')) {
+				e.preventDefault();
+				uploadImageFile(file);
+				return;
+			}
+		}
+	}
+
 	async function deleteNote() {
 		const res = await fetch(`/api/notes/${data.note.date}/delete`, { method: 'POST' });
 		if (res.ok) goto('/');
@@ -398,14 +476,50 @@
 					bind:value={weather}
 					class="mb-4 w-full rounded-lg border-stone-300 text-sm shadow-sm focus:border-teal-600 focus:ring-teal-600"
 				/>
-				<label class="block text-sm font-semibold text-stone-800" for="note-editor">Note (Markdown)</label>
+				<div class="flex flex-wrap items-center justify-between gap-2">
+					<label class="block text-sm font-semibold text-stone-800" for="note-editor">Note (Markdown)</label>
+					<div class="flex items-center gap-2">
+						{#if uploadingImage}
+							<span class="inline-flex items-center gap-1.5 text-xs font-medium text-teal-700 animate-pulse">
+								<span class="size-2 rounded-full bg-teal-600"></span>
+								Mengupload ke Cloudinary…
+							</span>
+						{/if}
+						<label
+							class="inline-flex items-center gap-1.5 rounded-lg border border-stone-300 bg-white px-2.5 py-1 text-xs font-medium text-stone-700 shadow-sm cursor-pointer hover:bg-stone-50 transition {uploadingImage ? 'opacity-50 pointer-events-none' : ''}"
+						>
+							<svg xmlns="http://www.w3.org/2000/svg" class="size-3.5 text-stone-500" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+								<rect width="18" height="18" x="3" y="3" rx="2" ry="2"/>
+								<circle cx="9" cy="9" r="2"/>
+								<path d="m21 15-3.086-3.086a2 2 0 0 0-2.828 0L6 21"/>
+							</svg>
+							<span>Upload Foto</span>
+							<input
+								type="file"
+								accept="image/*"
+								class="sr-only"
+								onchange={handleFileInput}
+								disabled={uploadingImage}
+							/>
+						</label>
+					</div>
+				</div>
+
 				<textarea
 					id="note-editor"
+					bind:this={textareaEl}
 					bind:value={noteContent}
+					onpaste={handlePaste}
+					ondrop={handleDrop}
+					ondragover={(e) => e.preventDefault()}
 					placeholder="Tulis dalam markdown…"
 					rows="16"
 					class="w-full rounded-lg border-stone-300 p-3 font-mono text-sm leading-relaxed shadow-sm focus:border-teal-600 focus:ring-teal-600"
 				></textarea>
+
+				<p class="text-[11px] text-stone-400">
+					Tips: Kamu bisa <strong class="font-medium text-stone-600">Paste (Ctrl+V)</strong> screenshot atau <strong class="font-medium text-stone-600">Drag & Drop</strong> foto langsung ke kotak catatan untuk auto-upload ke Cloudinary.
+				</p>
 			</section>
 		</Tabs.Content>
 	</Tabs.Root>

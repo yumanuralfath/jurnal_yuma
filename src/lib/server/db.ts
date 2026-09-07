@@ -55,6 +55,59 @@ export async function listRecentNotes(limit = 30) {
 	return (res.rows as unknown as DailyNoteRow[]).map(parseRow);
 }
 
+export type DailyNoteSummary = {
+	date: string;
+	day_name: string;
+	weather: string;
+	created_at: string;
+	updated_at: string;
+	github_path: string | null;
+	github_sha: string | null;
+	synced_at: string | null;
+};
+
+/** Ambil ringkasan catatan untuk bulan tertentu (tanpa kolom teks panjang agar sangat ringan dan cepat) */
+export async function listMonthNotesSummary(yearMonth: string): Promise<DailyNoteSummary[]> {
+	const res = await db.execute({
+		sql: `SELECT date, day_name, weather, created_at, updated_at, github_path, github_sha, synced_at 
+		      FROM daily_notes 
+		      WHERE date LIKE ? 
+		      ORDER BY date DESC`,
+		args: [`${yearMonth}-%`]
+	});
+	return res.rows as unknown as DailyNoteSummary[];
+}
+
+/** Ambil daftar bulan (YYYY-MM) yang memiliki catatan */
+export async function listAvailableMonths(): Promise<string[]> {
+	const res = await db.execute({
+		sql: `SELECT DISTINCT substr(date, 1, 7) as ym 
+		      FROM daily_notes 
+		      WHERE date IS NOT NULL AND length(date) >= 7 
+		      ORDER BY ym DESC`
+	});
+	return (res.rows as unknown as Array<{ ym: string }>).map((r) => r.ym);
+}
+
+/** Hitung statistik catatan langsung di database */
+export async function getNotesCounts() {
+	const res = await db.execute({
+		sql: `SELECT 
+				COUNT(*) as total,
+				SUM(CASE WHEN synced_at IS NOT NULL THEN 1 ELSE 0 END) as synced,
+				SUM(CASE WHEN synced_at IS NULL AND github_sha IS NOT NULL THEN 1 ELSE 0 END) as dirty,
+				SUM(CASE WHEN synced_at IS NULL AND github_sha IS NULL THEN 1 ELSE 0 END) as draft
+		      FROM daily_notes`
+	});
+	const row = (res.rows[0] ?? {}) as Record<string, unknown>;
+	return {
+		total: Number(row.total ?? 0),
+		synced: Number(row.synced ?? 0),
+		dirty: Number(row.dirty ?? 0),
+		never: Number(row.draft ?? 0)
+	};
+}
+
 export async function listAllNotes(order: 'asc' | 'desc' = 'asc') {
 	const res = await db.execute({
 		sql: `SELECT * FROM daily_notes ORDER BY date ${order === 'asc' ? 'ASC' : 'DESC'}`
