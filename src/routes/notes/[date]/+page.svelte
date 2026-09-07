@@ -406,8 +406,8 @@
 			</div>
 
 			<div class="flex items-center gap-3 text-xs">
-				<a href="/notebook/{data.note.date}" class="font-medium text-teal-800 hover:underline">
-					Buku Catatan
+				<a href="/notebook/{data.note.date}" target="_blank" class="font-medium text-teal-800 hover:underline">
+					Buku Catatan (Publik) ↗
 				</a>
 				<span>·</span>
 				<a href="/github/{data.note.date}" class="font-medium text-teal-800 hover:underline">
