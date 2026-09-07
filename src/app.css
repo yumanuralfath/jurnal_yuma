@@ -1,0 +1,31 @@
+@import 'tailwindcss';
+@plugin '@tailwindcss/forms';
+@plugin '@tailwindcss/typography';
+
+:root {
+	--ink: #1c1917;
+	--paper: #fafaf9;
+	--muted: #78716c;
+	--line: #e7e5e4;
+	--accent: #0f766e;
+	--warn: #b45309;
+	--danger: #b91c1c;
+	--ok: #15803d;
+}
+
+html {
+	color: var(--ink);
+	background: var(--paper);
+}
+
+body {
+	min-height: 100vh;
+	background:
+		radial-gradient(ellipse 80% 50% at 0% -20%, rgb(15 118 110 / 0.08), transparent),
+		radial-gradient(ellipse 60% 40% at 100% 0%, rgb(180 83 9 / 0.06), transparent),
+		var(--paper);
+}
+
+.prose-note {
+	@apply prose prose-stone max-w-none prose-headings:font-semibold prose-p:leading-relaxed prose-pre:bg-stone-900 prose-pre:text-stone-100;
+}
