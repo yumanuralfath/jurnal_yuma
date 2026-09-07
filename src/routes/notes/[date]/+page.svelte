@@ -24,10 +24,17 @@
 	let mode = $state<'view' | 'edit'>('view');
 	let deleteOpen = $state(false);
 	let syncStatus = $state<SyncStatus>('never');
-	/** Prefill dari GitHub: jangan overwrite form sampai user Simpan. */
 	let holdGithubPrefill = $state(false);
 	let lastStamp = $state('');
 	let modeInitialized = $state(false);
+
+	let uploadingImage = $state(false);
+	let textareaEl = $state<HTMLTextAreaElement | null>(null);
+
+	// Obsidian Footer Navigation Stems
+	let prevStem = $state('');
+	let nextStem = $state('');
+	let showFooterDetails = $state(false);
 
 	$effect.pre(() => {
 		const note = data.note;
@@ -35,6 +42,11 @@
 		syncStatus = getSyncStatus(note);
 
 		const prevDate = lastStamp.split(':')[0] ?? '';
+		if (prevDate !== note.date) {
+			prevStem = data.defaultPrevStem;
+			nextStem = data.defaultNextStem;
+		}
+
 		if (prevDate && prevDate !== note.date) {
 			holdGithubPrefill = false;
 			modeInitialized = false;
@@ -150,59 +162,9 @@
 		}
 	}
 
-	async function saveToDb() {
-		saving = true;
-		status = '';
-		try {
-			const res = await fetch('/api/notes', {
-				method: 'POST',
-				headers: { 'Content-Type': 'application/json' },
-				body: JSON.stringify({
-					date: data.note.date,
-					weather,
-					note_content: noteContent,
-					priority_items: priorityItems,
-					created_at: createdAt,
-					day_name: dayName,
-					tags
-				})
-			});
-			if (!res.ok) throw new Error((await res.json()).error ?? 'Gagal simpan');
-			holdGithubPrefill = false;
-			status = 'Tersimpan ke database. Status: perlu push ke GitHub.';
-			syncStatus = data.note.github_sha || syncStatus === 'synced' ? 'dirty' : 'never';
-			await invalidateAll();
-			return true;
-		} catch (e) {
-			status = e instanceof Error ? e.message : 'Gagal simpan';
-			return false;
-		} finally {
-			saving = false;
-		}
+	function setWeatherPreset(w: string) {
+		weather = w;
 	}
-
-	async function pushToGithub() {
-		pushing = true;
-		status = '';
-		try {
-			const saved = await saveToDb();
-			if (!saved) return;
-			const res = await fetch(`/api/notes/${data.note.date}/push`, { method: 'POST' });
-			const json = await res.json();
-			if (!res.ok) throw new Error(json.error ?? 'Gagal push');
-			holdGithubPrefill = false;
-			status = `Berhasil push ke GitHub (${json.path}). Deploy otomatis akan jalan.`;
-			syncStatus = 'synced';
-			await invalidateAll();
-		} catch (e) {
-			status = e instanceof Error ? e.message : 'Gagal push';
-		} finally {
-			pushing = false;
-		}
-	}
-
-	let uploadingImage = $state(false);
-	let textareaEl = $state<HTMLTextAreaElement | null>(null);
 
 	async function uploadImageFile(file: File) {
 		if (!file.type.startsWith('image/')) return;
@@ -279,6 +241,77 @@
 		}
 	}
 
+	function insertFormat(before: string, after = '', defaultText = '') {
+		const el = textareaEl;
+		if (!el) {
+			noteContent += before + defaultText + after;
+			return;
+		}
+		const start = el.selectionStart;
+		const end = el.selectionEnd;
+		const selection = noteContent.slice(start, end) || defaultText;
+		noteContent = noteContent.slice(0, start) + before + selection + after + noteContent.slice(end);
+		setTimeout(() => {
+			el.focus();
+			el.setSelectionRange(start + before.length, start + before.length + selection.length);
+		}, 0);
+	}
+
+	async function saveToDb() {
+		saving = true;
+		status = '';
+		try {
+			const res = await fetch('/api/notes', {
+				method: 'POST',
+				headers: { 'Content-Type': 'application/json' },
+				body: JSON.stringify({
+					date: data.note.date,
+					weather,
+					note_content: noteContent,
+					priority_items: priorityItems,
+					created_at: createdAt,
+					day_name: dayName,
+					tags
+				})
+			});
+			if (!res.ok) throw new Error((await res.json()).error ?? 'Gagal simpan');
+			holdGithubPrefill = false;
+			status = 'Tersimpan ke database. Status: perlu push ke GitHub.';
+			syncStatus = data.note.github_sha || syncStatus === 'synced' ? 'dirty' : 'never';
+			await invalidateAll();
+			return true;
+		} catch (e) {
+			status = e instanceof Error ? e.message : 'Gagal simpan';
+			return false;
+		} finally {
+			saving = false;
+		}
+	}
+
+	async function pushToGithub() {
+		pushing = true;
+		status = '';
+		try {
+			const saved = await saveToDb();
+			if (!saved) return;
+			const res = await fetch(`/api/notes/${data.note.date}/push`, {
+				method: 'POST',
+				headers: { 'Content-Type': 'application/json' },
+				body: JSON.stringify({ prevStem, nextStem })
+			});
+			const json = await res.json();
+			if (!res.ok) throw new Error(json.error ?? 'Gagal push');
+			holdGithubPrefill = false;
+			status = `Berhasil push ke GitHub (${json.path}). Deploy otomatis akan jalan.`;
+			syncStatus = 'synced';
+			await invalidateAll();
+		} catch (e) {
+			status = e instanceof Error ? e.message : 'Gagal push';
+		} finally {
+			pushing = false;
+		}
+	}
+
 	async function deleteNote() {
 		const res = await fetch(`/api/notes/${data.note.date}/delete`, { method: 'POST' });
 		if (res.ok) goto('/');
@@ -287,26 +320,67 @@
 	}
 </script>
 
-<div class="mx-auto max-w-3xl space-y-6 px-4 py-8 sm:px-6">
-	<a href="/" class="inline-flex text-sm text-stone-500 transition hover:text-stone-800">&larr; Kembali</a>
+<div class="mx-auto max-w-3xl space-y-6 px-4 py-6 sm:px-6 sm:py-8 pb-28 sm:pb-8">
+	<!-- Top Navigation & Date Switcher -->
+	<div class="flex items-center justify-between gap-2">
+		<a
+			href="/"
+			class="inline-flex items-center gap-1.5 rounded-xl border border-stone-200 bg-white px-3 py-1.5 text-xs font-semibold text-stone-700 shadow-xs transition hover:bg-stone-50 active:scale-95"
+		>
+			&larr; <span class="hidden sm:inline">Daftar Catatan</span><span class="sm:hidden">Kembali</span>
+		</a>
 
-	<header class="space-y-3">
+		<!-- Quick Day Switcher (Kemarin / Besok) -->
+		<div class="flex items-center gap-1 rounded-xl border border-stone-200 bg-white p-1 shadow-xs text-xs font-medium text-stone-600">
+			<a
+				href="/notes/{data.prevDate}"
+				title="Catatan tanggal {data.prevDate}"
+				class="rounded-lg px-2.5 py-1 text-stone-700 hover:bg-stone-100 transition active:scale-95"
+			>
+				&larr; <span class="hidden sm:inline">Kemarin</span>
+			</a>
+			<span class="text-stone-300">|</span>
+			<a
+				href="/notes/{data.nextDate}"
+				title="Catatan tanggal {data.nextDate}"
+				class="rounded-lg px-2.5 py-1 text-stone-700 hover:bg-stone-100 transition active:scale-95"
+			>
+				<span class="hidden sm:inline">Besok</span> &rarr;
+			</a>
+		</div>
+	</div>
+
+	<!-- Note Header Card -->
+	<header class="space-y-3 rounded-2xl border border-stone-200 bg-white p-5 shadow-sm">
 		<div class="flex flex-wrap items-start justify-between gap-3">
 			<div>
-				<h1 class="text-2xl font-semibold tracking-tight text-stone-900">{dateLabel}</h1>
-				<div class="mt-1 flex flex-wrap items-center gap-2 text-sm text-stone-500">
-					<span>{weather || 'cuaca belum terisi'}</span>
+				<div class="flex items-center gap-2 flex-wrap">
+					<h1 class="text-xl font-bold tracking-tight text-stone-900 sm:text-2xl">{dateLabel}</h1>
+					{#if data.isToday}
+						<span class="rounded-full bg-teal-50 px-2.5 py-0.5 text-xs font-semibold text-teal-800 ring-1 ring-teal-200">
+							Hari Ini
+						</span>
+					{:else if data.isPast}
+						<span class="rounded-full bg-stone-100 px-2 py-0.5 text-[11px] font-medium text-stone-600 ring-1 ring-stone-200">
+							Catatan Lampau
+						</span>
+					{/if}
+				</div>
+
+				<div class="mt-1 flex flex-wrap items-center gap-2 text-xs sm:text-sm text-stone-500">
+					<span>{weather || 'Cuaca belum terisi'}</span>
 					{#if mode === 'edit'}
 						<button
 							onclick={refetchWeather}
 							disabled={refetchingWeather}
-							class="text-xs text-teal-700 underline-offset-2 hover:underline disabled:opacity-50"
+							class="text-xs text-teal-700 font-medium underline-offset-2 hover:underline disabled:opacity-50"
 						>
 							{refetchingWeather ? 'mengambil…' : 'refresh cuaca'}
 						</button>
 					{/if}
 				</div>
 			</div>
+
 			<div class="flex flex-wrap items-center gap-2">
 				<span class="rounded-full px-2.5 py-1 text-[11px] font-medium ring-1 {badgeClass(syncStatus)}">
 					{syncStatusLabel(syncStatus)}
@@ -319,65 +393,64 @@
 			</div>
 		</div>
 
-		{#if data.note.synced_at}
-			<p class="text-xs text-stone-400">
-				Terakhir push: {new Date(data.note.synced_at).toLocaleString('id-ID')}
-				{#if data.note.github_path}
-					· <span class="font-mono">{data.note.github_path}</span>
+		<!-- Links Info -->
+		<div class="flex flex-wrap items-center justify-between border-t border-stone-100 pt-3 text-xs text-stone-500 gap-2">
+			<div>
+				{#if data.note.synced_at}
+					<span>Terakhir push: {new Date(data.note.synced_at).toLocaleString('id-ID')}</span>
+				{:else if data.note.github_path}
+					<span class="text-amber-700">Pernah di-push ke GitHub, ada perubahan lokal.</span>
+				{:else}
+					<span>Draft lokal — belum di-push ke GitHub.</span>
 				{/if}
-			</p>
-		{:else if data.note.github_path}
-			<p class="text-xs text-amber-700/80">
-				Pernah di-push ke <span class="font-mono">{data.note.github_path}</span>, ada perubahan lokal yang belum
-				di-push.
-			</p>
-		{:else}
-			<p class="text-xs text-stone-400">Note ini masih draft — belum pernah di-push ke GitHub.</p>
-		{/if}
+			</div>
 
-		<p class="text-xs">
-			<a href="/notebook/{data.note.date}" class="text-teal-800 underline-offset-2 hover:underline">
-				Buka di Buku Catatan
-			</a>
-			<span class="text-stone-400"> · </span>
-			<a href="/github/{data.note.date}" class="text-teal-800 underline-offset-2 hover:underline">
-				Lihat versi GitHub
-			</a>
-		</p>
+			<div class="flex items-center gap-3 text-xs">
+				<a href="/notebook/{data.note.date}" class="font-medium text-teal-800 hover:underline">
+					Buku Catatan
+				</a>
+				<span>·</span>
+				<a href="/github/{data.note.date}" class="font-medium text-teal-800 hover:underline">
+					GitHub Note
+				</a>
+			</div>
+		</div>
 	</header>
 
+	<!-- Tabs View vs Edit -->
 	<Tabs.Root bind:value={mode} class="space-y-5">
-		<Tabs.List class="inline-grid grid-cols-2 gap-1 rounded-lg bg-stone-200/70 p-1 text-sm font-medium text-stone-600">
+		<Tabs.List class="grid grid-cols-2 gap-1 rounded-xl bg-stone-200/80 p-1 text-sm font-semibold text-stone-600 shadow-xs">
 			<Tabs.Trigger
 				value="view"
-				class="rounded-md px-4 py-1.5 transition data-[state=active]:bg-white data-[state=active]:text-stone-900 data-[state=active]:shadow-sm"
+				class="rounded-lg py-2 transition data-[state=active]:bg-white data-[state=active]:text-stone-900 data-[state=active]:shadow-xs"
 			>
-				View
+				👁️ Lihat (View)
 			</Tabs.Trigger>
 			<Tabs.Trigger
 				value="edit"
-				class="rounded-md px-4 py-1.5 transition data-[state=active]:bg-white data-[state=active]:text-stone-900 data-[state=active]:shadow-sm"
+				class="rounded-lg py-2 transition data-[state=active]:bg-white data-[state=active]:text-stone-900 data-[state=active]:shadow-xs"
 			>
-				Edit
+				✏️ Tulis (Edit)
 			</Tabs.Trigger>
 		</Tabs.List>
 
+		<!-- MODE VIEW -->
 		<Tabs.Content value="view" class="space-y-6 outline-none">
-			<section class="space-y-3 rounded-xl border border-stone-200 bg-white p-5 shadow-sm">
+			<section class="space-y-3 rounded-2xl border border-stone-200 bg-white p-5 shadow-sm">
 				<div class="flex items-center justify-between gap-2">
-					<h2 class="text-sm font-semibold text-stone-800">Priority</h2>
-					<span class="text-xs text-stone-500">{completionPct}%</span>
+					<h2 class="text-sm font-bold text-stone-900">⚡ Prioritas</h2>
+					<span class="text-xs font-semibold text-stone-500">{completionPct}% Selesai</span>
 				</div>
 				{#if priorityItems.length === 0}
-					<p class="text-sm text-stone-400">Belum ada prioritas.</p>
+					<p class="text-xs text-stone-400">Belum ada prioritas untuk hari ini.</p>
 				{:else}
-					<ul class="space-y-2">
-						{#each priorityItems as item, i (`${i}-${item.text}`)}
+					<ul class="space-y-2.5">
+						{#each priorityItems as item, i (`view-${i}-${item.text}`)}
 							<li class="flex items-start gap-3 text-sm">
 								<span
-									class="mt-0.5 inline-flex size-4 shrink-0 items-center justify-center rounded border {item.done
+									class="mt-0.5 inline-flex size-5 shrink-0 items-center justify-center rounded-md border text-xs {item.done
 										? 'border-teal-700 bg-teal-700 text-white'
-										: 'border-stone-300'}"
+										: 'border-stone-300 bg-stone-50'}"
 									aria-hidden="true"
 								>
 									{#if item.done}✓{/if}
@@ -391,33 +464,36 @@
 				{/if}
 			</section>
 
-			<section class="rounded-xl border border-stone-200 bg-white p-5 shadow-sm">
-				<h2 class="mb-3 text-sm font-semibold text-stone-800">Note</h2>
+			<section class="rounded-2xl border border-stone-200 bg-white p-5 shadow-sm">
+				<h2 class="mb-3 text-sm font-bold text-stone-900">📝 Catatan</h2>
 				{#if noteContent.trim()}
 					<div class="prose-note">{@html renderedNote}</div>
 				{:else}
-					<p class="text-sm text-stone-400">Kosong. Buka mode Edit untuk menulis.</p>
+					<p class="text-sm text-stone-400 py-6 text-center">Catatan masih kosong. Buka mode Tulis untuk mulai mengetik.</p>
 				{/if}
 			</section>
 		</Tabs.Content>
 
+		<!-- MODE EDIT -->
 		<Tabs.Content value="edit" class="space-y-6 outline-none">
-			<section class="space-y-3 rounded-xl border border-stone-200 bg-white p-5 shadow-sm">
+			<!-- Section Priority Editor -->
+			<section class="space-y-3 rounded-2xl border border-stone-200 bg-white p-5 shadow-sm">
 				<div class="flex items-center justify-between gap-2">
-					<h2 class="text-sm font-semibold text-stone-800">Priority</h2>
-					<span class="text-xs text-stone-500">{completionPct}%</span>
+					<h2 class="text-sm font-bold text-stone-900">⚡ Daftar Prioritas</h2>
+					<span class="text-xs font-semibold text-stone-500">{completionPct}% Selesai</span>
 				</div>
+
 				<ul class="space-y-2">
 					{#each priorityItems as item, i (`edit-${i}-${item.text}`)}
-						<li class="flex items-center gap-2">
+						<li class="flex items-center gap-2.5 rounded-xl border border-stone-100 bg-stone-50/60 p-2 sm:p-2.5">
 							<input
 								type="checkbox"
 								checked={item.done}
 								onchange={() => toggleDone(i)}
-								class="size-4 rounded border-stone-300 text-teal-700 focus:ring-teal-600"
+								class="size-5 rounded-md border-stone-300 text-teal-700 focus:ring-teal-600 shrink-0 cursor-pointer"
 							/>
 							<span
-								class="min-w-0 flex-1 text-sm"
+								class="min-w-0 flex-1 text-sm leading-snug"
 								class:line-through={item.done}
 								class:text-stone-400={item.done}
 							>
@@ -428,7 +504,7 @@
 									type="button"
 									onclick={() => moveItem(i, -1)}
 									disabled={i === 0}
-									class="rounded px-1.5 py-0.5 text-xs text-stone-500 hover:bg-stone-100 disabled:opacity-30"
+									class="rounded-lg p-1.5 text-xs text-stone-500 hover:bg-stone-200/70 disabled:opacity-25"
 									aria-label="Naikkan"
 								>
 									↑
@@ -437,7 +513,7 @@
 									type="button"
 									onclick={() => moveItem(i, 1)}
 									disabled={i === priorityItems.length - 1}
-									class="rounded px-1.5 py-0.5 text-xs text-stone-500 hover:bg-stone-100 disabled:opacity-30"
+									class="rounded-lg p-1.5 text-xs text-stone-500 hover:bg-stone-200/70 disabled:opacity-25"
 									aria-label="Turunkan"
 								>
 									↓
@@ -445,50 +521,91 @@
 								<button
 									type="button"
 									onclick={() => removeItem(i)}
-									class="rounded px-1.5 py-0.5 text-xs text-red-600 hover:bg-red-50"
+									class="rounded-lg p-1.5 text-xs text-red-600 hover:bg-red-50"
 								>
-									hapus
+									✕
 								</button>
 							</div>
 						</li>
 					{/each}
 				</ul>
-				<div class="flex gap-2">
+
+				<div class="flex gap-2 pt-1">
 					<input
 						bind:value={newItemText}
-						placeholder="Tambah prioritas…"
-						class="flex-1 rounded-lg border-stone-300 text-sm shadow-sm focus:border-teal-600 focus:ring-teal-600"
+						placeholder="Tambah tugas/prioritas baru…"
+						class="flex-1 rounded-xl border-stone-300 bg-stone-50/70 px-3.5 py-2 text-sm shadow-xs focus:border-teal-600 focus:ring-teal-600"
 						onkeydown={(e) => e.key === 'Enter' && addItem()}
 					/>
 					<button
 						onclick={addItem}
-						class="rounded-lg border border-stone-300 bg-white px-3 py-1.5 text-sm hover:bg-stone-50"
+						class="rounded-xl bg-stone-900 px-4 py-2 text-xs font-semibold text-white shadow-xs hover:bg-stone-800 active:scale-95"
 					>
 						Tambah
 					</button>
 				</div>
 			</section>
 
-			<section class="space-y-2 rounded-xl border border-stone-200 bg-white p-5 shadow-sm">
-				<label class="block text-sm font-semibold text-stone-800" for="weather-input">Cuaca</label>
+			<!-- Section Cuaca & Input Cepat -->
+			<section class="space-y-3 rounded-2xl border border-stone-200 bg-white p-5 shadow-sm">
+				<label class="block text-sm font-bold text-stone-900" for="weather-input">Kondisi Cuaca</label>
 				<input
 					id="weather-input"
 					bind:value={weather}
-					class="mb-4 w-full rounded-lg border-stone-300 text-sm shadow-sm focus:border-teal-600 focus:ring-teal-600"
+					placeholder="Contoh: ⛅ 30°C - berawan"
+					class="w-full rounded-xl border-stone-300 bg-stone-50/70 px-3.5 py-2 text-sm shadow-xs focus:border-teal-600 focus:ring-teal-600"
 				/>
+
+				<!-- Cuaca Presets Cepat -->
+				<div class="flex flex-wrap items-center gap-1.5 text-xs text-stone-600">
+					<span class="text-[11px] text-stone-400 font-medium">Pilih cepat:</span>
+					<button
+						type="button"
+						onclick={() => setWeatherPreset('☀️ 32°C - cerah')}
+						class="rounded-lg border border-stone-200 bg-stone-50 px-2 py-1 hover:bg-stone-100 transition"
+					>
+						☀️ Cerah
+					</button>
+					<button
+						type="button"
+						onclick={() => setWeatherPreset('⛅ 29°C - berawan')}
+						class="rounded-lg border border-stone-200 bg-stone-50 px-2 py-1 hover:bg-stone-100 transition"
+					>
+						⛅ Berawan
+					</button>
+					<button
+						type="button"
+						onclick={() => setWeatherPreset('🌧️ 25°C - hujan')}
+						class="rounded-lg border border-stone-200 bg-stone-50 px-2 py-1 hover:bg-stone-100 transition"
+					>
+						🌧️ Hujan
+					</button>
+					<button
+						type="button"
+						onclick={() => setWeatherPreset('🌦️ 28°C - gerimis')}
+						class="rounded-lg border border-stone-200 bg-stone-50 px-2 py-1 hover:bg-stone-100 transition"
+					>
+						🌦️ Gerimis
+					</button>
+				</div>
+			</section>
+
+			<!-- Section Markdown Note Editor dengan Mobile Toolbar -->
+			<section class="space-y-3 rounded-2xl border border-stone-200 bg-white p-5 shadow-sm">
 				<div class="flex flex-wrap items-center justify-between gap-2">
-					<label class="block text-sm font-semibold text-stone-800" for="note-editor">Note (Markdown)</label>
+					<label class="block text-sm font-bold text-stone-900" for="note-editor">Note (Markdown)</label>
+
 					<div class="flex items-center gap-2">
 						{#if uploadingImage}
-							<span class="inline-flex items-center gap-1.5 text-xs font-medium text-teal-700 animate-pulse">
+							<span class="inline-flex items-center gap-1.5 text-xs font-semibold text-teal-700 animate-pulse">
 								<span class="size-2 rounded-full bg-teal-600"></span>
-								Mengupload ke Cloudinary…
+								Mengupload foto…
 							</span>
 						{/if}
 						<label
-							class="inline-flex items-center gap-1.5 rounded-lg border border-stone-300 bg-white px-2.5 py-1 text-xs font-medium text-stone-700 shadow-sm cursor-pointer hover:bg-stone-50 transition {uploadingImage ? 'opacity-50 pointer-events-none' : ''}"
+							class="inline-flex items-center gap-1.5 rounded-xl border border-stone-300 bg-teal-50 px-3 py-1.5 text-xs font-semibold text-teal-900 shadow-xs cursor-pointer hover:bg-teal-100/80 transition active:scale-95 {uploadingImage ? 'opacity-50 pointer-events-none' : ''}"
 						>
-							<svg xmlns="http://www.w3.org/2000/svg" class="size-3.5 text-stone-500" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+							<svg xmlns="http://www.w3.org/2000/svg" class="size-3.5 text-teal-700" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
 								<rect width="18" height="18" x="3" y="3" rx="2" ry="2"/>
 								<circle cx="9" cy="9" r="2"/>
 								<path d="m21 15-3.086-3.086a2 2 0 0 0-2.828 0L6 21"/>
@@ -505,6 +622,66 @@
 					</div>
 				</div>
 
+				<!-- Toolbar Format Markdown Cepat Khusus Mobile & Desktop -->
+				<div class="flex flex-wrap items-center gap-1 rounded-xl border border-stone-200 bg-stone-50/80 p-1 text-xs">
+					<button
+						type="button"
+						title="Tebal (Bold)"
+						onclick={() => insertFormat('**', '**', 'teks tebal')}
+						class="min-h-[32px] min-w-[32px] rounded-lg px-2 py-1 font-bold text-stone-700 hover:bg-stone-200/70"
+					>
+						B
+					</button>
+					<button
+						type="button"
+						title="Miring (Italic)"
+						onclick={() => insertFormat('*', '*', 'teks miring')}
+						class="min-h-[32px] min-w-[32px] rounded-lg px-2 py-1 italic font-serif text-stone-700 hover:bg-stone-200/70"
+					>
+						I
+					</button>
+					<button
+						type="button"
+						title="Heading H2"
+						onclick={() => insertFormat('\n## ', '', 'Judul Bagian')}
+						class="min-h-[32px] min-w-[32px] rounded-lg px-2 py-1 font-semibold text-stone-700 hover:bg-stone-200/70"
+					>
+						H2
+					</button>
+					<button
+						type="button"
+						title="Task Checkbox"
+						onclick={() => insertFormat('\n- [ ] ', '', 'Tugas')}
+						class="min-h-[32px] rounded-lg px-2 py-1 font-mono text-[11px] text-stone-700 hover:bg-stone-200/70"
+					>
+						[ ]
+					</button>
+					<button
+						type="button"
+						title="Bullet list"
+						onclick={() => insertFormat('\n- ', '', 'Daftar item')}
+						class="min-h-[32px] min-w-[32px] rounded-lg px-2 py-1 text-stone-700 hover:bg-stone-200/70"
+					>
+						•
+					</button>
+					<button
+						type="button"
+						title="Kutipan (Quote)"
+						onclick={() => insertFormat('\n> ', '', 'Kutipan')}
+						class="min-h-[32px] min-w-[32px] rounded-lg px-2 py-1 text-stone-700 hover:bg-stone-200/70"
+					>
+						"
+					</button>
+					<button
+						type="button"
+						title="Kode Inline"
+						onclick={() => insertFormat('`', '`', 'kode')}
+						class="min-h-[32px] rounded-lg px-2 py-1 font-mono text-[11px] text-stone-700 hover:bg-stone-200/70"
+					>
+						&lt;/&gt;
+					</button>
+				</div>
+
 				<textarea
 					id="note-editor"
 					bind:this={textareaEl}
@@ -512,64 +689,133 @@
 					onpaste={handlePaste}
 					ondrop={handleDrop}
 					ondragover={(e) => e.preventDefault()}
-					placeholder="Tulis dalam markdown…"
+					placeholder="Tulis catatan harian Anda di sini (mendukung Markdown, Paste gambar Ctrl+V, atau Drag & Drop)..."
 					rows="16"
-					class="w-full rounded-lg border-stone-300 p-3 font-mono text-sm leading-relaxed shadow-sm focus:border-teal-600 focus:ring-teal-600"
+					class="w-full rounded-xl border-stone-300 p-3.5 font-mono text-sm leading-relaxed shadow-xs focus:border-teal-600 focus:ring-teal-600 sm:text-sm"
 				></textarea>
 
 				<p class="text-[11px] text-stone-400">
-					Tips: Kamu bisa <strong class="font-medium text-stone-600">Paste (Ctrl+V)</strong> screenshot atau <strong class="font-medium text-stone-600">Drag & Drop</strong> foto langsung ke kotak catatan untuk auto-upload ke Cloudinary.
+					Tips: Bisa <strong class="font-medium text-stone-600">Paste (Ctrl+V)</strong> screenshot atau <strong class="font-medium text-stone-600">Drag & Drop</strong> gambar ke dalam editor.
 				</p>
+			</section>
+
+			<!-- Section Footer Obsidian Navigasi -->
+			<section class="rounded-2xl border border-stone-200 bg-white p-4 shadow-sm space-y-2">
+				<div class="flex items-center justify-between">
+					<div class="flex items-center gap-1.5">
+						<span class="text-xs font-bold text-stone-800">Navigasi Footer Obsidian</span>
+						<span class="text-[10px] rounded-md bg-stone-100 px-1.5 py-0.5 text-stone-500 font-mono">auto-linked</span>
+					</div>
+					<button
+						type="button"
+						onclick={() => (showFooterDetails = !showFooterDetails)}
+						class="text-xs text-teal-700 font-medium hover:underline"
+					>
+						{showFooterDetails ? 'Tutup Pengaturan' : 'Sesuaikan Stem'}
+					</button>
+				</div>
+
+				<!-- Live Preview of the footer -->
+				<div class="rounded-xl border border-stone-200/80 bg-stone-50/70 p-3 font-mono text-xs text-stone-700 break-all leading-relaxed">
+					⬅️ [[{prevStem}]] | 📅 {humanDateLabel(data.note.date)} | [[{nextStem}]] ➡️
+				</div>
+
+				{#if showFooterDetails}
+					<div class="grid grid-cols-1 sm:grid-cols-2 gap-3 pt-2 border-t border-stone-100 text-xs">
+						<div>
+							<label for="prev-stem-input" class="block font-medium text-stone-700 mb-1">
+								Stem Sebelumnya (⬅️):
+							</label>
+							<input
+								id="prev-stem-input"
+								bind:value={prevStem}
+								class="w-full rounded-lg border-stone-300 bg-white px-3 py-1.5 font-mono text-xs shadow-xs focus:border-teal-600 focus:ring-teal-600"
+							/>
+						</div>
+						<div>
+							<label for="next-stem-input" class="block font-medium text-stone-700 mb-1">
+								Stem Sesudahnya (➡️):
+							</label>
+							<input
+								id="next-stem-input"
+								bind:value={nextStem}
+								class="w-full rounded-lg border-stone-300 bg-white px-3 py-1.5 font-mono text-xs shadow-xs focus:border-teal-600 focus:ring-teal-600"
+							/>
+						</div>
+						<div class="sm:col-span-2 flex justify-end">
+							<button
+								type="button"
+								onclick={() => {
+									prevStem = data.defaultPrevStem;
+									nextStem = data.defaultNextStem;
+								}}
+								class="text-xs text-stone-500 hover:text-stone-800 underline"
+							>
+								Reset ke Nilai Standar Kalender
+							</button>
+						</div>
+					</div>
+				{/if}
 			</section>
 		</Tabs.Content>
 	</Tabs.Root>
 
-	<div class="flex flex-wrap items-center gap-2 border-t border-stone-200 pt-4">
+	<!-- Desktop Actions Bar -->
+	<div class="hidden sm:flex flex-wrap items-center gap-2.5 border-t border-stone-200/80 pt-4">
 		<button
 			onclick={saveToDb}
 			disabled={saving || !dirtyLocal}
-			class="rounded-lg border border-stone-300 bg-white px-3 py-2 text-sm shadow-sm hover:bg-stone-50 disabled:opacity-50"
+			class="rounded-xl border border-stone-300 bg-white px-4 py-2.5 text-sm font-semibold text-stone-700 shadow-xs hover:bg-stone-50 active:scale-95 disabled:opacity-50"
 		>
-			{saving ? 'Menyimpan…' : 'Simpan'}
+			{saving ? 'Menyimpan…' : 'Simpan ke Database'}
 		</button>
 		<button
 			onclick={pushToGithub}
 			disabled={pushing}
-			class="rounded-lg bg-teal-800 px-3 py-2 text-sm font-medium text-white hover:bg-teal-700 disabled:opacity-50"
+			class="inline-flex items-center gap-2 rounded-xl bg-teal-800 px-5 py-2.5 text-sm font-semibold text-white shadow-sm hover:bg-teal-700 active:scale-95 disabled:opacity-50"
 		>
-			{pushing ? 'Push…' : 'Push ke GitHub'}
+			{#if pushing}
+				<span class="size-3.5 animate-spin rounded-full border-2 border-white border-t-transparent"></span>
+				<span>Pushing ke GitHub…</span>
+			{:else}
+				<svg xmlns="http://www.w3.org/2000/svg" class="size-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+					<path d="M12 19V5"/>
+					<path d="m5 12 7-7 7 7"/>
+				</svg>
+				<span>Push ke GitHub</span>
+			{/if}
 		</button>
 		<a
 			href="/github/{data.note.date}"
-			class="rounded-lg border border-stone-300 bg-white px-3 py-2 text-sm shadow-sm hover:bg-stone-50"
+			class="rounded-xl border border-stone-300 bg-white px-3.5 py-2.5 text-sm text-stone-600 shadow-xs hover:bg-stone-50"
 		>
-			Lihat GitHub
+			Lihat di GitHub
 		</a>
 
 		<Dialog.Root bind:open={deleteOpen}>
 			<Dialog.Trigger
-				class="ml-auto rounded-lg px-3 py-2 text-sm text-red-700 hover:bg-red-50"
+				class="ml-auto rounded-xl px-3.5 py-2 text-xs font-semibold text-red-700 hover:bg-red-50 transition"
 			>
-				Hapus
+				Hapus Catatan
 			</Dialog.Trigger>
 			<Dialog.Portal>
-				<Dialog.Overlay class="fixed inset-0 z-40 bg-stone-900/40" />
+				<Dialog.Overlay class="fixed inset-0 z-40 bg-stone-900/50 backdrop-blur-xs" />
 				<Dialog.Content
-					class="fixed top-1/2 left-1/2 z-50 w-[min(92vw,24rem)] -translate-x-1/2 -translate-y-1/2 rounded-xl border border-stone-200 bg-white p-5 shadow-xl outline-none"
+					class="fixed top-1/2 left-1/2 z-50 w-[min(92vw,24rem)] -translate-x-1/2 -translate-y-1/2 rounded-2xl border border-stone-200 bg-white p-6 shadow-xl outline-none"
 				>
-					<Dialog.Title class="text-base font-semibold text-stone-900">Hapus daily note?</Dialog.Title>
-					<Dialog.Description class="mt-2 text-sm text-stone-600">
-						Note akan dihapus dari database. Kalau sudah pernah di-push, file di GitHub juga akan dihapus.
+					<Dialog.Title class="text-base font-bold text-stone-900">Hapus daily note?</Dialog.Title>
+					<Dialog.Description class="mt-2 text-xs text-stone-600 leading-relaxed">
+						Note akan dihapus dari database. Jika sudah pernah di-push, file di repository GitHub juga akan dihapus.
 					</Dialog.Description>
 					<div class="mt-5 flex justify-end gap-2">
-						<Dialog.Close class="rounded-lg border border-stone-300 px-3 py-1.5 text-sm hover:bg-stone-50">
+						<Dialog.Close class="rounded-xl border border-stone-300 px-4 py-2 text-xs font-medium text-stone-700 hover:bg-stone-50">
 							Batal
 						</Dialog.Close>
 						<button
 							onclick={deleteNote}
-							class="rounded-lg bg-red-700 px-3 py-1.5 text-sm text-white hover:bg-red-600"
+							class="rounded-xl bg-red-700 px-4 py-2 text-xs font-semibold text-white hover:bg-red-600 shadow-sm"
 						>
-							Hapus
+							Hapus Sekarang
 						</button>
 					</div>
 				</Dialog.Content>
@@ -577,7 +823,44 @@
 		</Dialog.Root>
 	</div>
 
+	<!-- Status Feedback Toast -->
 	{#if status}
-		<p class="rounded-lg bg-white px-3 py-2 text-sm text-stone-600 ring-1 ring-stone-200">{status}</p>
+		<div class="rounded-xl border border-stone-200 bg-white p-3.5 text-xs text-stone-700 shadow-sm leading-relaxed">
+			{status}
+		</div>
 	{/if}
+
+	<!-- Sticky Mobile Bottom Bar (Thumb-Friendly on Phones) -->
+	<div class="sm:hidden fixed bottom-0 left-0 right-0 z-30 border-t border-stone-200 bg-white/95 backdrop-blur-md px-4 py-2.5 shadow-lg flex items-center justify-between gap-2">
+		<button
+			onclick={saveToDb}
+			disabled={saving || !dirtyLocal}
+			class="flex-1 rounded-xl border border-stone-300 bg-stone-50 py-2.5 text-xs font-semibold text-stone-700 shadow-xs active:bg-stone-100 disabled:opacity-40"
+		>
+			{saving ? 'Menyimpan…' : 'Simpan'}
+		</button>
+		<button
+			onclick={pushToGithub}
+			disabled={pushing}
+			class="flex-1 inline-flex items-center justify-center gap-1.5 rounded-xl bg-teal-800 py-2.5 text-xs font-semibold text-white shadow-sm active:bg-teal-900 disabled:opacity-40"
+		>
+			{#if pushing}
+				<span class="size-3 animate-spin rounded-full border-2 border-white border-t-transparent"></span>
+				<span>Pushing…</span>
+			{:else}
+				<span>Push GitHub</span>
+			{/if}
+		</button>
+		<button
+			onclick={() => (deleteOpen = true)}
+			class="rounded-xl px-2.5 py-2.5 text-xs text-red-600 hover:bg-red-50"
+			aria-label="Hapus"
+		>
+			<svg xmlns="http://www.w3.org/2000/svg" class="size-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+				<path d="M3 6h18"/>
+				<path d="M19 6v14c0 1-1 2-2 2H7c-1 0-2-1-2-2V6"/>
+				<path d="M8 6V4c0-1 1-2 2-2h4c1 0 2 1 2 2v2"/>
+			</svg>
+		</button>
+	</div>
 </div>

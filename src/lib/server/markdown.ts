@@ -37,9 +37,14 @@ function progressBar(pct: number, slots = 10) {
  * Format mengikuti file di repo Obsidian-Note / Yuma Note/Daily:
  * frontmatter → Priority (opsional) → Note → footer navigasi → completion (hanya jika ada priority)
  */
-export function buildDailyMarkdown(note: DailyNote, opts: { monthlyAvgPct?: number } = {}) {
+export function buildDailyMarkdown(
+	note: DailyNote,
+	opts: { monthlyAvgPct?: number; prevStem?: string; nextStem?: string } = {}
+) {
 	const prevIso = addDays(note.date, -1);
 	const nextIso = addDays(note.date, 1);
+	const prevStem = opts.prevStem || dailyFilenameStem(prevIso);
+	const nextStem = opts.nextStem || dailyFilenameStem(nextIso);
 	const date = dateFromISO(note.date);
 	const week = isoWeekNumber(date);
 	const { total, done, pct } = completion(note.priority_items);
@@ -67,7 +72,7 @@ export function buildDailyMarkdown(note: DailyNote, opts: { monthlyAvgPct?: numb
 	const timeLabel = note.updated_at.includes('T') ? (note.updated_at.split('T')[1] ?? '') : '';
 	const footer = [
 		'---',
-		`⬅️ [[${dailyFilenameStem(prevIso)}]]  |  📅 ${humanDateLabel(note.date)}  |  [[${dailyFilenameStem(nextIso)}]] ➡️`,
+		`⬅️ [[${prevStem}]]  |  📅 ${humanDateLabel(note.date)}  |  [[${nextStem}]] ➡️`,
 		'',
 		`*Dibuat: ${timeLabel} | Week ${String(week).padStart(2, '0')}*`,
 		''

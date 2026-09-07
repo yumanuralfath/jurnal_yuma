@@ -15,17 +15,27 @@ function monthlyAveragePct(notes: Awaited<ReturnType<typeof listNotesInMonth>>) 
 	return total / withItems.length;
 }
 
-export const POST: RequestHandler = async ({ params }) => {
+export const POST: RequestHandler = async ({ params, request }) => {
 	const date = params.date!;
 	const note = await getNoteByDate(date);
 	if (!note) return json({ error: 'Note tidak ditemukan' }, { status: 404 });
+
+	let prevStem: string | undefined;
+	let nextStem: string | undefined;
+	try {
+		const body = await request.json().catch(() => ({}));
+		if (body?.prevStem) prevStem = String(body.prevStem).trim();
+		if (body?.nextStem) nextStem = String(body.nextStem).trim();
+	} catch {
+		// ignore
+	}
 
 	const path = pathForDate(date);
 	const d = dateFromISO(date);
 	const monthNotes = await listNotesInMonth(d.getFullYear(), d.getMonth() + 1);
 	const monthlyAvgPct = monthlyAveragePct(monthNotes);
 
-	const md = buildDailyMarkdown(note, { monthlyAvgPct });
+	const md = buildDailyMarkdown(note, { monthlyAvgPct, prevStem, nextStem });
 
 	try {
 		// cek sha terbaru di GitHub dulu untuk menghindari overwrite konflik
