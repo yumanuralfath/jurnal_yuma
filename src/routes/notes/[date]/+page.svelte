@@ -36,7 +36,9 @@
 	const maxImageDimension = 2000;
 	const maxVideoSize = 100 * 1024 * 1024;
 	const maxVideoDuration = 5 * 60;
-	const videoOptimizeThreshold = 8 * 1024 * 1024;
+	const videoOptimizeThreshold = 4 * 1024 * 1024;
+	const videoBitrate = 1_500_000;
+	const audioBitrate = 96_000;
 	type CapturableVideo = HTMLVideoElement & { captureStream?: () => MediaStream };
 
 	// Obsidian Footer Navigation Stems
@@ -217,6 +219,10 @@
 		].includes(file.type);
 	}
 
+	function formatFileSize(bytes: number) {
+		return `${(bytes / (1024 * 1024)).toFixed(2)} MB`;
+	}
+
 	async function optimizeVideo(file: File) {
 		if (!file.type.startsWith('video/')) throw new Error('File harus berupa video.');
 		if (file.size > maxVideoSize) throw new Error('Ukuran video maksimal 100 MB.');
@@ -253,7 +259,11 @@
 			if (!mimeType) return file;
 
 			const chunks: Blob[] = [];
-			const recorder = new MediaRecorder(stream, { mimeType, videoBitsPerSecond: 2_500_000 });
+			const recorder = new MediaRecorder(stream, {
+				mimeType,
+				videoBitsPerSecond: videoBitrate,
+				audioBitsPerSecond: audioBitrate
+			});
 			const recording = new Promise<Blob>((resolve, reject) => {
 				recorder.ondataavailable = (event) => event.data.size > 0 && chunks.push(event.data);
 				recorder.onerror = () => reject(new Error('Optimasi video gagal.'));
@@ -309,6 +319,14 @@
 				const preparedFile = file.type.startsWith('image/')
 					? await compressImage(file)
 					: await optimizeVideo(file);
+				if (file.type.startsWith('video/')) {
+					const savedBytes = file.size - preparedFile.size;
+					const savedPercent = (savedBytes / file.size) * 100;
+					console.info(
+						`[Video compression] ${file.name}: ${formatFileSize(file.size)} -> ${formatFileSize(preparedFile.size)} ` +
+							`(${savedPercent >= 0 ? `hemat ${savedPercent.toFixed(2)}%` : `bertambah ${Math.abs(savedPercent).toFixed(2)}%`})`
+					);
+				}
 				const form = new FormData();
 				form.append('file', preparedFile);
 
