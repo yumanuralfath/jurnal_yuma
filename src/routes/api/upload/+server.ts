@@ -1,14 +1,11 @@
 import { json } from '@sveltejs/kit';
 import type { RequestHandler } from './$types';
 import { env } from '$env/dynamic/private';
-import crypto from 'node:crypto';
 
 export const POST: RequestHandler = async ({ request }) => {
 	try {
 		const cloudName = env.CLOUDINARY_CLOUD_NAME;
-		const apiKey = env.CLOUDINARY_API_KEY;
-		const apiSecret = env.CLOUDINARY_API_SECRET;
-		const uploadPreset = env.CLOUDINARY_UPLOAD_PRESET;
+		const uploadPreset = env.CLOUDINARY_UPLOAD_PRESET || 'Obsidian';
 
 		if (!cloudName) {
 			return json({ error: 'Cloudinary belum dikonfigurasi di server (.env)' }, { status: 500 });
@@ -23,19 +20,7 @@ export const POST: RequestHandler = async ({ request }) => {
 
 		const cldForm = new FormData();
 		cldForm.append('file', file);
-
-		const timestamp = Math.round(Date.now() / 1000);
-
-		if (apiSecret && apiKey) {
-			// Upload terotentikasi dengan signed signature
-			const str = `timestamp=${timestamp}${apiSecret}`;
-			const signature = crypto.createHash('sha1').update(str).digest('hex');
-			cldForm.append('api_key', apiKey);
-			cldForm.append('timestamp', String(timestamp));
-			cldForm.append('signature', signature);
-		} else if (uploadPreset) {
-			cldForm.append('upload_preset', uploadPreset);
-		}
+		cldForm.append('upload_preset', uploadPreset);
 
 		const res = await fetch(`https://api.cloudinary.com/v1_1/${cloudName}/image/upload`, {
 			method: 'POST',
