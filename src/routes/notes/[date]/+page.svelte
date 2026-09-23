@@ -29,11 +29,15 @@
 	let lastStamp = $state('');
 	let modeInitialized = $state(false);
 
-	let uploadingImage = $state(false);
+	let uploadingMedia = $state(false);
 	let textareaEl = $state<HTMLTextAreaElement | null>(null);
 	const compressThreshold = 2 * 1024 * 1024;
 	const maxImageSize = 15 * 1024 * 1024;
 	const maxImageDimension = 2000;
+	const maxVideoSize = 100 * 1024 * 1024;
+	const maxVideoDuration = 5 * 60;
+	const videoOptimizeThreshold = 8 * 1024 * 1024;
+	type CapturableVideo = HTMLVideoElement & { captureStream?: () => MediaStream };
 
 	// Obsidian Footer Navigation Stems
 	let prevStem = $state('');
@@ -202,17 +206,90 @@
 		});
 	}
 
-	async function uploadImageFiles(files: File[]) {
-		if (uploadingImage || files.length === 0) return;
-		const imageFiles = files.filter((file) => file.type.startsWith('image/'));
-		if (imageFiles.length === 0) {
-			status = 'Tidak ada file gambar yang dipilih.';
+	function supportedMedia(file: File) {
+		return [
+			'image/jpeg',
+			'image/png',
+			'image/webp',
+			'video/mp4',
+			'video/webm',
+			'video/quicktime'
+		].includes(file.type);
+	}
+
+	async function optimizeVideo(file: File) {
+		if (!file.type.startsWith('video/')) throw new Error('File harus berupa video.');
+		if (file.size > maxVideoSize) throw new Error('Ukuran video maksimal 100 MB.');
+
+		const sourceUrl = URL.createObjectURL(file);
+		const video = document.createElement('video');
+		video.preload = 'metadata';
+		video.muted = true;
+		video.playsInline = true;
+		video.src = sourceUrl;
+		const capturableVideo = video as CapturableVideo;
+		try {
+			await new Promise<void>((resolve, reject) => {
+				video.onloadedmetadata = () => resolve();
+				video.onerror = () => reject(new Error('Video tidak dapat dibaca browser.'));
+			});
+			if (!Number.isFinite(video.duration) || video.duration > maxVideoDuration) {
+				throw new Error('Durasi video maksimal 5 menit.');
+			}
+			if (
+				file.size <= videoOptimizeThreshold ||
+				!('MediaRecorder' in window) ||
+				!capturableVideo.captureStream
+			) {
+				return file;
+			}
+
+			const stream = capturableVideo.captureStream();
+			const mimeType = [
+				'video/webm;codecs=vp9,opus',
+				'video/webm;codecs=vp8,opus',
+				'video/webm'
+			].find((type) => MediaRecorder.isTypeSupported(type));
+			if (!mimeType) return file;
+
+			const chunks: Blob[] = [];
+			const recorder = new MediaRecorder(stream, { mimeType, videoBitsPerSecond: 2_500_000 });
+			const recording = new Promise<Blob>((resolve, reject) => {
+				recorder.ondataavailable = (event) => event.data.size > 0 && chunks.push(event.data);
+				recorder.onerror = () => reject(new Error('Optimasi video gagal.'));
+				recorder.onstop = () => resolve(new Blob(chunks, { type: mimeType }));
+			});
+			recorder.start();
+			await video.play();
+			await new Promise<void>((resolve) => {
+				video.onended = () => resolve();
+			});
+			recorder.stop();
+			const optimized = await recording;
+			stream.getTracks().forEach((track: MediaStreamTrack) => track.stop());
+			if (optimized.size >= file.size) return file;
+
+			return new File([optimized], `${file.name.replace(/\.[^.]+$/, '')}.webm`, {
+				type: mimeType.split(';')[0],
+				lastModified: Date.now()
+			});
+		} finally {
+			URL.revokeObjectURL(sourceUrl);
+		}
+	}
+
+	async function uploadMediaFiles(files: File[]) {
+		if (uploadingMedia || files.length === 0) return;
+		const mediaFiles = files.filter(supportedMedia);
+		if (mediaFiles.length === 0) {
+			status = 'Format media tidak didukung. Gunakan JPG, PNG, WebP, MP4, WebM, atau MOV.';
 			return;
 		}
 
-		uploadingImage = true;
-		const placeholders = imageFiles.map(
-			(file, index) => `\n<!-- upload-${Date.now()}-${index} -->\n![Mengupload ${file.name}...]()\n`
+		uploadingMedia = true;
+		const placeholders = mediaFiles.map(
+			(file, index) =>
+				`\n<!-- upload-${Date.now()}-${index} -->\n${file.type.startsWith('video/') ? `[Mengupload ${file.name}...]()` : `![Mengupload ${file.name}...]()`}\n`
 		);
 
 		const el = textareaEl;
@@ -225,13 +302,15 @@
 
 		let uploadedCount = 0;
 		const errors: string[] = [];
-		for (let index = 0; index < imageFiles.length; index++) {
-			const file = imageFiles[index];
+		for (let index = 0; index < mediaFiles.length; index++) {
+			const file = mediaFiles[index];
 			const placeholder = placeholders[index];
 			try {
-				const compressedFile = await compressImage(file);
+				const preparedFile = file.type.startsWith('image/')
+					? await compressImage(file)
+					: await optimizeVideo(file);
 				const form = new FormData();
-				form.append('file', compressedFile);
+				form.append('file', preparedFile);
 
 				const res = await fetch('/api/upload', {
 					method: 'POST',
@@ -239,10 +318,12 @@
 				});
 
 				const json = await res.json();
-				if (!res.ok) throw new Error(json.error ?? 'Gagal upload gambar');
+				if (!res.ok) throw new Error(json.error ?? 'Gagal upload media');
 
-				const markdownImage = `\n![](${json.url})\n`;
-				noteContent = noteContent.replace(placeholder, markdownImage);
+				const markdownMedia = file.type.startsWith('video/')
+					? `\n[Video: ${file.name}](${json.url})\n`
+					: `\n![](${json.url})\n`;
+				noteContent = noteContent.replace(placeholder, markdownMedia);
 				uploadedCount += 1;
 			} catch (e) {
 				noteContent = noteContent.replace(placeholder, '');
@@ -250,17 +331,17 @@
 			}
 		}
 
-		uploadingImage = false;
+		uploadingMedia = false;
 		status =
 			errors.length === 0
-				? `${uploadedCount} foto berhasil diunggah ke Cloudinary dan disisipkan.`
-				: `${uploadedCount} foto berhasil diunggah. ${errors.join(' ')}`;
+				? `${uploadedCount} media berhasil diunggah ke Cloudinary dan disisipkan.`
+				: `${uploadedCount} media berhasil diunggah. ${errors.join(' ')}`;
 	}
 
 	function handleFileInput(e: Event) {
 		const target = e.target as HTMLInputElement;
 		const files = target.files ? Array.from(target.files) : [];
-		uploadImageFiles(files);
+		uploadMediaFiles(files);
 		target.value = '';
 	}
 
@@ -274,7 +355,7 @@
 			.filter((file): file is File => file !== null);
 		if (files.length > 0) {
 			e.preventDefault();
-			uploadImageFiles(files);
+			uploadMediaFiles(files);
 		}
 	}
 
@@ -282,10 +363,10 @@
 		const files = e.dataTransfer?.files;
 		if (!files || files.length === 0) return;
 
-		const imageFiles = Array.from(files).filter((file) => file.type.startsWith('image/'));
-		if (imageFiles.length > 0) {
+		const mediaFiles = Array.from(files).filter(supportedMedia);
+		if (mediaFiles.length > 0) {
 			e.preventDefault();
-			uploadImageFiles(imageFiles);
+			uploadMediaFiles(mediaFiles);
 		}
 	}
 
@@ -680,16 +761,16 @@
 					>
 
 					<div class="flex items-center gap-2">
-						{#if uploadingImage}
+						{#if uploadingMedia}
 							<span
 								class="inline-flex animate-pulse items-center gap-1.5 text-xs font-semibold text-teal-700"
 							>
 								<span class="size-2 rounded-full bg-teal-600"></span>
-								Mengupload foto…
+								Memproses media…
 							</span>
 						{/if}
 						<label
-							class="inline-flex cursor-pointer items-center gap-1.5 rounded-xl border border-stone-300 bg-teal-50 px-3 py-1.5 text-xs font-semibold text-teal-900 shadow-xs transition hover:bg-teal-100/80 active:scale-95 {uploadingImage
+							class="inline-flex cursor-pointer items-center gap-1.5 rounded-xl border border-stone-300 bg-teal-50 px-3 py-1.5 text-xs font-semibold text-teal-900 shadow-xs transition hover:bg-teal-100/80 active:scale-95 {uploadingMedia
 								? 'pointer-events-none opacity-50'
 								: ''}"
 						>
@@ -707,14 +788,14 @@
 								<circle cx="9" cy="9" r="2" />
 								<path d="m21 15-3.086-3.086a2 2 0 0 0-2.828 0L6 21" />
 							</svg>
-							<span>Upload Foto</span>
+							<span>Upload Media</span>
 							<input
 								type="file"
-								accept="image/jpeg,image/png,image/webp"
+								accept="image/jpeg,image/png,image/webp,video/mp4,video/webm,video/quicktime"
 								multiple
 								class="sr-only"
 								onchange={handleFileInput}
-								disabled={uploadingImage}
+								disabled={uploadingMedia}
 							/>
 						</label>
 					</div>
@@ -796,7 +877,8 @@
 
 				<p class="text-[11px] text-stone-400">
 					Tips: Bisa <strong class="font-medium text-stone-600">Paste (Ctrl+V)</strong> screenshot
-					atau <strong class="font-medium text-stone-600">Drag & Drop</strong> gambar ke dalam editor.
+					atau <strong class="font-medium text-stone-600">Drag & Drop</strong> gambar/video ke dalam editor.
+					Video maksimal 100 MB dan 5 menit; video besar akan dicoba dioptimalkan sebelum upload.
 				</p>
 			</section>
 

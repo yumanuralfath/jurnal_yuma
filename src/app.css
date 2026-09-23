@@ -22,10 +22,18 @@ body {
 	min-height: 100vh;
 	background:
 		radial-gradient(ellipse 80% 50% at 0% -20%, rgb(15 118 110 / 0.08), transparent),
-		radial-gradient(ellipse 60% 40% at 100% 0%, rgb(180 83 9 / 0.06), transparent),
-		var(--paper);
+		radial-gradient(ellipse 60% 40% at 100% 0%, rgb(180 83 9 / 0.06), transparent), var(--paper);
 }
 
 .prose-note {
-	@apply prose prose-stone max-w-none prose-headings:font-semibold prose-p:leading-relaxed prose-pre:bg-stone-900 prose-pre:text-stone-100 prose-img:rounded-xl prose-img:shadow-sm prose-img:max-h-[600px] prose-img:w-auto prose-img:my-4 prose-img:border prose-img:border-stone-200;
+	@apply prose max-w-none prose-stone prose-headings:font-semibold prose-p:leading-relaxed prose-pre:bg-stone-900 prose-pre:text-stone-100 prose-img:my-4 prose-img:max-h-[600px] prose-img:w-auto prose-img:rounded-xl prose-img:border prose-img:border-stone-200 prose-img:shadow-sm;
+}
+
+.prose-note .note-video {
+	max-width: 100%;
+	max-height: 600px;
+	margin: 1rem 0;
+	border: 1px solid var(--line);
+	border-radius: 0.75rem;
+	background: #0c0a09;
 }
