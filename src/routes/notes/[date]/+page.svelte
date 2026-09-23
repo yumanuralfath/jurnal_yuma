@@ -202,71 +202,79 @@
 		});
 	}
 
-	async function uploadImageFile(file: File) {
-		let compressedFile: File;
-		try {
-			compressedFile = await compressImage(file);
-		} catch (e) {
-			status = e instanceof Error ? e.message : 'Gambar tidak valid';
+	async function uploadImageFiles(files: File[]) {
+		if (uploadingImage || files.length === 0) return;
+		const imageFiles = files.filter((file) => file.type.startsWith('image/'));
+		if (imageFiles.length === 0) {
+			status = 'Tidak ada file gambar yang dipilih.';
 			return;
 		}
 
 		uploadingImage = true;
-		const placeholder = `\n![Mengupload ${file.name}...]()\n`;
+		const placeholders = imageFiles.map(
+			(file, index) => `\n<!-- upload-${Date.now()}-${index} -->\n![Mengupload ${file.name}...]()\n`
+		);
 
 		const el = textareaEl;
 		const startPos = el ? el.selectionStart : noteContent.length;
 		const endPos = el ? el.selectionEnd : noteContent.length;
 
 		const prevContent = noteContent;
-		noteContent = prevContent.slice(0, startPos) + placeholder + prevContent.slice(endPos);
+		noteContent =
+			prevContent.slice(0, startPos) + placeholders.join('') + prevContent.slice(endPos);
 
-		try {
-			const form = new FormData();
-			form.append('file', compressedFile);
+		let uploadedCount = 0;
+		const errors: string[] = [];
+		for (let index = 0; index < imageFiles.length; index++) {
+			const file = imageFiles[index];
+			const placeholder = placeholders[index];
+			try {
+				const compressedFile = await compressImage(file);
+				const form = new FormData();
+				form.append('file', compressedFile);
 
-			const res = await fetch('/api/upload', {
-				method: 'POST',
-				body: form
-			});
+				const res = await fetch('/api/upload', {
+					method: 'POST',
+					body: form
+				});
 
-			const json = await res.json();
-			if (!res.ok) throw new Error(json.error ?? 'Gagal upload gambar');
+				const json = await res.json();
+				if (!res.ok) throw new Error(json.error ?? 'Gagal upload gambar');
 
-			const markdownImage = `\n![](${json.url})\n`;
-			noteContent = noteContent.replace(placeholder, markdownImage);
-			status = 'Gambar berhasil diunggah ke Cloudinary dan disisipkan.';
-		} catch (e) {
-			noteContent = noteContent.replace(placeholder, '');
-			status = e instanceof Error ? e.message : 'Gagal upload gambar';
-		} finally {
-			uploadingImage = false;
+				const markdownImage = `\n![](${json.url})\n`;
+				noteContent = noteContent.replace(placeholder, markdownImage);
+				uploadedCount += 1;
+			} catch (e) {
+				noteContent = noteContent.replace(placeholder, '');
+				errors.push(`${file.name}: ${e instanceof Error ? e.message : 'gagal diunggah'}`);
+			}
 		}
+
+		uploadingImage = false;
+		status =
+			errors.length === 0
+				? `${uploadedCount} foto berhasil diunggah ke Cloudinary dan disisipkan.`
+				: `${uploadedCount} foto berhasil diunggah. ${errors.join(' ')}`;
 	}
 
 	function handleFileInput(e: Event) {
 		const target = e.target as HTMLInputElement;
-		const file = target.files?.[0];
-		if (file) {
-			uploadImageFile(file);
-			target.value = '';
-		}
+		const files = target.files ? Array.from(target.files) : [];
+		uploadImageFiles(files);
+		target.value = '';
 	}
 
 	function handlePaste(e: ClipboardEvent) {
 		const items = e.clipboardData?.items;
 		if (!items) return;
 
-		for (let i = 0; i < items.length; i++) {
-			const item = items[i];
-			if (item.type.startsWith('image/')) {
-				const file = item.getAsFile();
-				if (file) {
-					e.preventDefault();
-					uploadImageFile(file);
-					return;
-				}
-			}
+		const files = Array.from(items)
+			.filter((item) => item.type.startsWith('image/'))
+			.map((item) => item.getAsFile())
+			.filter((file): file is File => file !== null);
+		if (files.length > 0) {
+			e.preventDefault();
+			uploadImageFiles(files);
 		}
 	}
 
@@ -274,13 +282,10 @@
 		const files = e.dataTransfer?.files;
 		if (!files || files.length === 0) return;
 
-		for (let i = 0; i < files.length; i++) {
-			const file = files[i];
-			if (file.type.startsWith('image/')) {
-				e.preventDefault();
-				uploadImageFile(file);
-				return;
-			}
+		const imageFiles = Array.from(files).filter((file) => file.type.startsWith('image/'));
+		if (imageFiles.length > 0) {
+			e.preventDefault();
+			uploadImageFiles(imageFiles);
 		}
 	}
 
@@ -705,7 +710,8 @@
 							<span>Upload Foto</span>
 							<input
 								type="file"
-								accept="image/*"
+								accept="image/jpeg,image/png,image/webp"
+								multiple
 								class="sr-only"
 								onchange={handleFileInput}
 								disabled={uploadingImage}
