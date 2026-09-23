@@ -2,6 +2,9 @@ import { json } from '@sveltejs/kit';
 import type { RequestHandler } from './$types';
 import { env } from '$env/dynamic/private';
 
+const maxUploadSize = 15 * 1024 * 1024;
+const allowedImageTypes = new Set(['image/jpeg', 'image/png', 'image/webp']);
+
 export const POST: RequestHandler = async ({ request }) => {
 	try {
 		const cloudName = env.CLOUDINARY_CLOUD_NAME;
@@ -16,6 +19,12 @@ export const POST: RequestHandler = async ({ request }) => {
 
 		if (!file || !(file instanceof Blob)) {
 			return json({ error: 'Tidak ada file gambar yang diunggah' }, { status: 400 });
+		}
+		if (!allowedImageTypes.has(file.type)) {
+			return json({ error: 'Format gambar harus JPG, PNG, atau WebP' }, { status: 400 });
+		}
+		if (file.size > maxUploadSize) {
+			return json({ error: 'Ukuran gambar maksimal 15 MB' }, { status: 413 });
 		}
 
 		const cldForm = new FormData();

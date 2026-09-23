@@ -1,5 +1,6 @@
 <script lang="ts">
 	import { invalidateAll, goto } from '$app/navigation';
+	import { resolve } from '$app/paths';
 	import { page } from '$app/state';
 	import { onMount } from 'svelte';
 	import { humanDateLabel } from '$lib/dateUtils';
@@ -30,6 +31,9 @@
 
 	let uploadingImage = $state(false);
 	let textareaEl = $state<HTMLTextAreaElement | null>(null);
+	const compressThreshold = 2 * 1024 * 1024;
+	const maxImageSize = 15 * 1024 * 1024;
+	const maxImageDimension = 2000;
 
 	// Obsidian Footer Navigation Stems
 	let prevStem = $state('');
@@ -166,8 +170,47 @@
 		weather = w;
 	}
 
+	async function compressImage(file: File) {
+		if (!file.type.startsWith('image/')) throw new Error('File harus berupa gambar.');
+		if (file.size > maxImageSize) throw new Error('Ukuran gambar maksimal 15 MB.');
+		if (file.type === 'image/gif' || file.type === 'image/svg+xml') {
+			throw new Error('Format GIF dan SVG belum didukung. Gunakan JPG, PNG, atau WebP.');
+		}
+		if (file.size <= compressThreshold) return file;
+
+		const image = await createImageBitmap(file);
+		const scale = Math.min(1, maxImageDimension / Math.max(image.width, image.height));
+		const canvas = document.createElement('canvas');
+		canvas.width = Math.max(1, Math.round(image.width * scale));
+		canvas.height = Math.max(1, Math.round(image.height * scale));
+		const context = canvas.getContext('2d');
+		if (!context) {
+			image.close();
+			throw new Error('Browser tidak mendukung pemrosesan gambar.');
+		}
+		context.drawImage(image, 0, 0, canvas.width, canvas.height);
+		image.close();
+
+		const compressedBlob = await new Promise<Blob | null>((resolve) =>
+			canvas.toBlob(resolve, 'image/jpeg', 0.82)
+		);
+		if (!compressedBlob) throw new Error('Gambar gagal dikompres.');
+
+		return new File([compressedBlob], `${file.name.replace(/\.[^.]+$/, '')}.jpg`, {
+			type: 'image/jpeg',
+			lastModified: Date.now()
+		});
+	}
+
 	async function uploadImageFile(file: File) {
-		if (!file.type.startsWith('image/')) return;
+		let compressedFile: File;
+		try {
+			compressedFile = await compressImage(file);
+		} catch (e) {
+			status = e instanceof Error ? e.message : 'Gambar tidak valid';
+			return;
+		}
+
 		uploadingImage = true;
 		const placeholder = `\n![Mengupload ${file.name}...]()\n`;
 
@@ -180,7 +223,7 @@
 
 		try {
 			const form = new FormData();
-			form.append('file', file);
+			form.append('file', compressedFile);
 
 			const res = await fetch('/api/upload', {
 				method: 'POST',
@@ -314,36 +357,40 @@
 
 	async function deleteNote() {
 		const res = await fetch(`/api/notes/${data.note.date}/delete`, { method: 'POST' });
-		if (res.ok) goto('/');
+		if (res.ok) goto(resolve('/'));
 		else status = 'Gagal menghapus note.';
 		deleteOpen = false;
 	}
 </script>
 
-<div class="mx-auto max-w-3xl space-y-6 px-4 py-6 sm:px-6 sm:py-8 pb-28 sm:pb-8">
+<div class="mx-auto max-w-3xl space-y-6 px-4 py-6 pb-28 sm:px-6 sm:py-8 sm:pb-8">
 	<!-- Top Navigation & Date Switcher -->
 	<div class="flex items-center justify-between gap-2">
 		<a
-			href="/"
+			href={resolve('/')}
 			class="inline-flex items-center gap-1.5 rounded-xl border border-stone-200 bg-white px-3 py-1.5 text-xs font-semibold text-stone-700 shadow-xs transition hover:bg-stone-50 active:scale-95"
 		>
-			&larr; <span class="hidden sm:inline">Daftar Catatan</span><span class="sm:hidden">Kembali</span>
+			&larr; <span class="hidden sm:inline">Daftar Catatan</span><span class="sm:hidden"
+				>Kembali</span
+			>
 		</a>
 
 		<!-- Quick Day Switcher (Kemarin / Besok) -->
-		<div class="flex items-center gap-1 rounded-xl border border-stone-200 bg-white p-1 shadow-xs text-xs font-medium text-stone-600">
+		<div
+			class="flex items-center gap-1 rounded-xl border border-stone-200 bg-white p-1 text-xs font-medium text-stone-600 shadow-xs"
+		>
 			<a
-				href="/notes/{data.prevDate}"
+				href={resolve(`/notes/${data.prevDate}`)}
 				title="Catatan tanggal {data.prevDate}"
-				class="rounded-lg px-2.5 py-1 text-stone-700 hover:bg-stone-100 transition active:scale-95"
+				class="rounded-lg px-2.5 py-1 text-stone-700 transition hover:bg-stone-100 active:scale-95"
 			>
 				&larr; <span class="hidden sm:inline">Kemarin</span>
 			</a>
 			<span class="text-stone-300">|</span>
 			<a
-				href="/notes/{data.nextDate}"
+				href={resolve(`/notes/${data.nextDate}`)}
 				title="Catatan tanggal {data.nextDate}"
-				class="rounded-lg px-2.5 py-1 text-stone-700 hover:bg-stone-100 transition active:scale-95"
+				class="rounded-lg px-2.5 py-1 text-stone-700 transition hover:bg-stone-100 active:scale-95"
 			>
 				<span class="hidden sm:inline">Besok</span> &rarr;
 			</a>
@@ -354,26 +401,30 @@
 	<header class="space-y-3 rounded-2xl border border-stone-200 bg-white p-5 shadow-sm">
 		<div class="flex flex-wrap items-start justify-between gap-3">
 			<div>
-				<div class="flex items-center gap-2 flex-wrap">
+				<div class="flex flex-wrap items-center gap-2">
 					<h1 class="text-xl font-bold tracking-tight text-stone-900 sm:text-2xl">{dateLabel}</h1>
 					{#if data.isToday}
-						<span class="rounded-full bg-teal-50 px-2.5 py-0.5 text-xs font-semibold text-teal-800 ring-1 ring-teal-200">
+						<span
+							class="rounded-full bg-teal-50 px-2.5 py-0.5 text-xs font-semibold text-teal-800 ring-1 ring-teal-200"
+						>
 							Hari Ini
 						</span>
 					{:else if data.isPast}
-						<span class="rounded-full bg-stone-100 px-2 py-0.5 text-[11px] font-medium text-stone-600 ring-1 ring-stone-200">
+						<span
+							class="rounded-full bg-stone-100 px-2 py-0.5 text-[11px] font-medium text-stone-600 ring-1 ring-stone-200"
+						>
 							Catatan Lampau
 						</span>
 					{/if}
 				</div>
 
-				<div class="mt-1 flex flex-wrap items-center gap-2 text-xs sm:text-sm text-stone-500">
+				<div class="mt-1 flex flex-wrap items-center gap-2 text-xs text-stone-500 sm:text-sm">
 					<span>{weather || 'Cuaca belum terisi'}</span>
 					{#if mode === 'edit'}
 						<button
 							onclick={refetchWeather}
 							disabled={refetchingWeather}
-							class="text-xs text-teal-700 font-medium underline-offset-2 hover:underline disabled:opacity-50"
+							class="text-xs font-medium text-teal-700 underline-offset-2 hover:underline disabled:opacity-50"
 						>
 							{refetchingWeather ? 'mengambil…' : 'refresh cuaca'}
 						</button>
@@ -382,11 +433,15 @@
 			</div>
 
 			<div class="flex flex-wrap items-center gap-2">
-				<span class="rounded-full px-2.5 py-1 text-[11px] font-medium ring-1 {badgeClass(syncStatus)}">
+				<span
+					class="rounded-full px-2.5 py-1 text-[11px] font-medium ring-1 {badgeClass(syncStatus)}"
+				>
 					{syncStatusLabel(syncStatus)}
 				</span>
 				{#if dirtyLocal}
-					<span class="rounded-full bg-sky-50 px-2.5 py-1 text-[11px] font-medium text-sky-800 ring-1 ring-sky-200">
+					<span
+						class="rounded-full bg-sky-50 px-2.5 py-1 text-[11px] font-medium text-sky-800 ring-1 ring-sky-200"
+					>
 						Belum disimpan
 					</span>
 				{/if}
@@ -394,7 +449,9 @@
 		</div>
 
 		<!-- Links Info -->
-		<div class="flex flex-wrap items-center justify-between border-t border-stone-100 pt-3 text-xs text-stone-500 gap-2">
+		<div
+			class="flex flex-wrap items-center justify-between gap-2 border-t border-stone-100 pt-3 text-xs text-stone-500"
+		>
 			<div>
 				{#if data.note.synced_at}
 					<span>Terakhir push: {new Date(data.note.synced_at).toLocaleString('id-ID')}</span>
@@ -406,11 +463,18 @@
 			</div>
 
 			<div class="flex items-center gap-3 text-xs">
-				<a href="/notebook/{data.note.date}" target="_blank" class="font-medium text-teal-800 hover:underline">
+				<a
+					href={resolve(`/notebook/${data.note.date}`)}
+					target="_blank"
+					class="font-medium text-teal-800 hover:underline"
+				>
 					Buku Catatan (Publik) ↗
 				</a>
 				<span>·</span>
-				<a href="/github/{data.note.date}" class="font-medium text-teal-800 hover:underline">
+				<a
+					href={resolve(`/github/${data.note.date}`)}
+					class="font-medium text-teal-800 hover:underline"
+				>
 					GitHub Note
 				</a>
 			</div>
@@ -419,7 +483,9 @@
 
 	<!-- Tabs View vs Edit -->
 	<Tabs.Root bind:value={mode} class="space-y-5">
-		<Tabs.List class="grid grid-cols-2 gap-1 rounded-xl bg-stone-200/80 p-1 text-sm font-semibold text-stone-600 shadow-xs">
+		<Tabs.List
+			class="grid grid-cols-2 gap-1 rounded-xl bg-stone-200/80 p-1 text-sm font-semibold text-stone-600 shadow-xs"
+		>
 			<Tabs.Trigger
 				value="view"
 				class="rounded-lg py-2 transition data-[state=active]:bg-white data-[state=active]:text-stone-900 data-[state=active]:shadow-xs"
@@ -455,7 +521,11 @@
 								>
 									{#if item.done}✓{/if}
 								</span>
-								<span class:line-through={item.done} class:text-stone-400={item.done} class="leading-relaxed">
+								<span
+									class:line-through={item.done}
+									class:text-stone-400={item.done}
+									class="leading-relaxed"
+								>
 									{item.text}
 								</span>
 							</li>
@@ -467,9 +537,12 @@
 			<section class="rounded-2xl border border-stone-200 bg-white p-5 shadow-sm">
 				<h2 class="mb-3 text-sm font-bold text-stone-900">📝 Catatan</h2>
 				{#if noteContent.trim()}
+					<!-- eslint-disable-next-line svelte/no-at-html-tags -->
 					<div class="prose-note">{@html renderedNote}</div>
 				{:else}
-					<p class="text-sm text-stone-400 py-6 text-center">Catatan masih kosong. Buka mode Tulis untuk mulai mengetik.</p>
+					<p class="py-6 text-center text-sm text-stone-400">
+						Catatan masih kosong. Buka mode Tulis untuk mulai mengetik.
+					</p>
 				{/if}
 			</section>
 		</Tabs.Content>
@@ -485,12 +558,14 @@
 
 				<ul class="space-y-2">
 					{#each priorityItems as item, i (`edit-${i}-${item.text}`)}
-						<li class="flex items-center gap-2.5 rounded-xl border border-stone-100 bg-stone-50/60 p-2 sm:p-2.5">
+						<li
+							class="flex items-center gap-2.5 rounded-xl border border-stone-100 bg-stone-50/60 p-2 sm:p-2.5"
+						>
 							<input
 								type="checkbox"
 								checked={item.done}
 								onchange={() => toggleDone(i)}
-								class="size-5 rounded-md border-stone-300 text-teal-700 focus:ring-teal-600 shrink-0 cursor-pointer"
+								class="size-5 shrink-0 cursor-pointer rounded-md border-stone-300 text-teal-700 focus:ring-teal-600"
 							/>
 							<span
 								class="min-w-0 flex-1 text-sm leading-snug"
@@ -548,7 +623,9 @@
 
 			<!-- Section Cuaca & Input Cepat -->
 			<section class="space-y-3 rounded-2xl border border-stone-200 bg-white p-5 shadow-sm">
-				<label class="block text-sm font-bold text-stone-900" for="weather-input">Kondisi Cuaca</label>
+				<label class="block text-sm font-bold text-stone-900" for="weather-input"
+					>Kondisi Cuaca</label
+				>
 				<input
 					id="weather-input"
 					bind:value={weather}
@@ -558,32 +635,32 @@
 
 				<!-- Cuaca Presets Cepat -->
 				<div class="flex flex-wrap items-center gap-1.5 text-xs text-stone-600">
-					<span class="text-[11px] text-stone-400 font-medium">Pilih cepat:</span>
+					<span class="text-[11px] font-medium text-stone-400">Pilih cepat:</span>
 					<button
 						type="button"
 						onclick={() => setWeatherPreset('☀️ 32°C - cerah')}
-						class="rounded-lg border border-stone-200 bg-stone-50 px-2 py-1 hover:bg-stone-100 transition"
+						class="rounded-lg border border-stone-200 bg-stone-50 px-2 py-1 transition hover:bg-stone-100"
 					>
 						☀️ Cerah
 					</button>
 					<button
 						type="button"
 						onclick={() => setWeatherPreset('⛅ 29°C - berawan')}
-						class="rounded-lg border border-stone-200 bg-stone-50 px-2 py-1 hover:bg-stone-100 transition"
+						class="rounded-lg border border-stone-200 bg-stone-50 px-2 py-1 transition hover:bg-stone-100"
 					>
 						⛅ Berawan
 					</button>
 					<button
 						type="button"
 						onclick={() => setWeatherPreset('🌧️ 25°C - hujan')}
-						class="rounded-lg border border-stone-200 bg-stone-50 px-2 py-1 hover:bg-stone-100 transition"
+						class="rounded-lg border border-stone-200 bg-stone-50 px-2 py-1 transition hover:bg-stone-100"
 					>
 						🌧️ Hujan
 					</button>
 					<button
 						type="button"
 						onclick={() => setWeatherPreset('🌦️ 28°C - gerimis')}
-						class="rounded-lg border border-stone-200 bg-stone-50 px-2 py-1 hover:bg-stone-100 transition"
+						class="rounded-lg border border-stone-200 bg-stone-50 px-2 py-1 transition hover:bg-stone-100"
 					>
 						🌦️ Gerimis
 					</button>
@@ -593,22 +670,37 @@
 			<!-- Section Markdown Note Editor dengan Mobile Toolbar -->
 			<section class="space-y-3 rounded-2xl border border-stone-200 bg-white p-5 shadow-sm">
 				<div class="flex flex-wrap items-center justify-between gap-2">
-					<label class="block text-sm font-bold text-stone-900" for="note-editor">Note (Markdown)</label>
+					<label class="block text-sm font-bold text-stone-900" for="note-editor"
+						>Note (Markdown)</label
+					>
 
 					<div class="flex items-center gap-2">
 						{#if uploadingImage}
-							<span class="inline-flex items-center gap-1.5 text-xs font-semibold text-teal-700 animate-pulse">
+							<span
+								class="inline-flex animate-pulse items-center gap-1.5 text-xs font-semibold text-teal-700"
+							>
 								<span class="size-2 rounded-full bg-teal-600"></span>
 								Mengupload foto…
 							</span>
 						{/if}
 						<label
-							class="inline-flex items-center gap-1.5 rounded-xl border border-stone-300 bg-teal-50 px-3 py-1.5 text-xs font-semibold text-teal-900 shadow-xs cursor-pointer hover:bg-teal-100/80 transition active:scale-95 {uploadingImage ? 'opacity-50 pointer-events-none' : ''}"
+							class="inline-flex cursor-pointer items-center gap-1.5 rounded-xl border border-stone-300 bg-teal-50 px-3 py-1.5 text-xs font-semibold text-teal-900 shadow-xs transition hover:bg-teal-100/80 active:scale-95 {uploadingImage
+								? 'pointer-events-none opacity-50'
+								: ''}"
 						>
-							<svg xmlns="http://www.w3.org/2000/svg" class="size-3.5 text-teal-700" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-								<rect width="18" height="18" x="3" y="3" rx="2" ry="2"/>
-								<circle cx="9" cy="9" r="2"/>
-								<path d="m21 15-3.086-3.086a2 2 0 0 0-2.828 0L6 21"/>
+							<svg
+								xmlns="http://www.w3.org/2000/svg"
+								class="size-3.5 text-teal-700"
+								viewBox="0 0 24 24"
+								fill="none"
+								stroke="currentColor"
+								stroke-width="2"
+								stroke-linecap="round"
+								stroke-linejoin="round"
+							>
+								<rect width="18" height="18" x="3" y="3" rx="2" ry="2" />
+								<circle cx="9" cy="9" r="2" />
+								<path d="m21 15-3.086-3.086a2 2 0 0 0-2.828 0L6 21" />
 							</svg>
 							<span>Upload Foto</span>
 							<input
@@ -623,12 +715,14 @@
 				</div>
 
 				<!-- Toolbar Format Markdown Cepat Khusus Mobile & Desktop -->
-				<div class="flex flex-wrap items-center gap-1 rounded-xl border border-stone-200 bg-stone-50/80 p-1 text-xs">
+				<div
+					class="flex flex-wrap items-center gap-1 rounded-xl border border-stone-200 bg-stone-50/80 p-1 text-xs"
+				>
 					<button
 						type="button"
 						title="Tebal (Bold)"
 						onclick={() => insertFormat('**', '**', 'teks tebal')}
-						class="min-h-[32px] min-w-[32px] rounded-lg px-2 py-1 font-bold text-stone-700 hover:bg-stone-200/70"
+						class="min-h-8 min-w-8 rounded-lg px-2 py-1 font-bold text-stone-700 hover:bg-stone-200/70"
 					>
 						B
 					</button>
@@ -636,7 +730,7 @@
 						type="button"
 						title="Miring (Italic)"
 						onclick={() => insertFormat('*', '*', 'teks miring')}
-						class="min-h-[32px] min-w-[32px] rounded-lg px-2 py-1 italic font-serif text-stone-700 hover:bg-stone-200/70"
+						class="min-h-8 min-w-8 rounded-lg px-2 py-1 font-serif text-stone-700 italic hover:bg-stone-200/70"
 					>
 						I
 					</button>
@@ -644,7 +738,7 @@
 						type="button"
 						title="Heading H2"
 						onclick={() => insertFormat('\n## ', '', 'Judul Bagian')}
-						class="min-h-[32px] min-w-[32px] rounded-lg px-2 py-1 font-semibold text-stone-700 hover:bg-stone-200/70"
+						class="min-h-8 min-w-8 rounded-lg px-2 py-1 font-semibold text-stone-700 hover:bg-stone-200/70"
 					>
 						H2
 					</button>
@@ -652,7 +746,7 @@
 						type="button"
 						title="Task Checkbox"
 						onclick={() => insertFormat('\n- [ ] ', '', 'Tugas')}
-						class="min-h-[32px] rounded-lg px-2 py-1 font-mono text-[11px] text-stone-700 hover:bg-stone-200/70"
+						class="min-h-8 rounded-lg px-2 py-1 font-mono text-[11px] text-stone-700 hover:bg-stone-200/70"
 					>
 						[ ]
 					</button>
@@ -660,7 +754,7 @@
 						type="button"
 						title="Bullet list"
 						onclick={() => insertFormat('\n- ', '', 'Daftar item')}
-						class="min-h-[32px] min-w-[32px] rounded-lg px-2 py-1 text-stone-700 hover:bg-stone-200/70"
+						class="min-h-8 min-w-8 rounded-lg px-2 py-1 text-stone-700 hover:bg-stone-200/70"
 					>
 						•
 					</button>
@@ -668,7 +762,7 @@
 						type="button"
 						title="Kutipan (Quote)"
 						onclick={() => insertFormat('\n> ', '', 'Kutipan')}
-						class="min-h-[32px] min-w-[32px] rounded-lg px-2 py-1 text-stone-700 hover:bg-stone-200/70"
+						class="min-h-8 min-w-8 rounded-lg px-2 py-1 text-stone-700 hover:bg-stone-200/70"
 					>
 						"
 					</button>
@@ -676,7 +770,7 @@
 						type="button"
 						title="Kode Inline"
 						onclick={() => insertFormat('`', '`', 'kode')}
-						class="min-h-[32px] rounded-lg px-2 py-1 font-mono text-[11px] text-stone-700 hover:bg-stone-200/70"
+						class="min-h-8 rounded-lg px-2 py-1 font-mono text-[11px] text-stone-700 hover:bg-stone-200/70"
 					>
 						&lt;/&gt;
 					</button>
@@ -695,35 +789,40 @@
 				></textarea>
 
 				<p class="text-[11px] text-stone-400">
-					Tips: Bisa <strong class="font-medium text-stone-600">Paste (Ctrl+V)</strong> screenshot atau <strong class="font-medium text-stone-600">Drag & Drop</strong> gambar ke dalam editor.
+					Tips: Bisa <strong class="font-medium text-stone-600">Paste (Ctrl+V)</strong> screenshot
+					atau <strong class="font-medium text-stone-600">Drag & Drop</strong> gambar ke dalam editor.
 				</p>
 			</section>
 
 			<!-- Section Footer Obsidian Navigasi -->
-			<section class="rounded-2xl border border-stone-200 bg-white p-4 shadow-sm space-y-2">
+			<section class="space-y-2 rounded-2xl border border-stone-200 bg-white p-4 shadow-sm">
 				<div class="flex items-center justify-between">
 					<div class="flex items-center gap-1.5">
 						<span class="text-xs font-bold text-stone-800">Navigasi Footer Obsidian</span>
-						<span class="text-[10px] rounded-md bg-stone-100 px-1.5 py-0.5 text-stone-500 font-mono">auto-linked</span>
+						<span class="rounded-md bg-stone-100 px-1.5 py-0.5 font-mono text-[10px] text-stone-500"
+							>auto-linked</span
+						>
 					</div>
 					<button
 						type="button"
 						onclick={() => (showFooterDetails = !showFooterDetails)}
-						class="text-xs text-teal-700 font-medium hover:underline"
+						class="text-xs font-medium text-teal-700 hover:underline"
 					>
 						{showFooterDetails ? 'Tutup Pengaturan' : 'Sesuaikan Stem'}
 					</button>
 				</div>
 
 				<!-- Live Preview of the footer -->
-				<div class="rounded-xl border border-stone-200/80 bg-stone-50/70 p-3 font-mono text-xs text-stone-700 break-all leading-relaxed">
+				<div
+					class="rounded-xl border border-stone-200/80 bg-stone-50/70 p-3 font-mono text-xs leading-relaxed break-all text-stone-700"
+				>
 					⬅️ [[{prevStem}]] | 📅 {humanDateLabel(data.note.date)} | [[{nextStem}]] ➡️
 				</div>
 
 				{#if showFooterDetails}
-					<div class="grid grid-cols-1 sm:grid-cols-2 gap-3 pt-2 border-t border-stone-100 text-xs">
+					<div class="grid grid-cols-1 gap-3 border-t border-stone-100 pt-2 text-xs sm:grid-cols-2">
 						<div>
-							<label for="prev-stem-input" class="block font-medium text-stone-700 mb-1">
+							<label for="prev-stem-input" class="mb-1 block font-medium text-stone-700">
 								Stem Sebelumnya (⬅️):
 							</label>
 							<input
@@ -733,7 +832,7 @@
 							/>
 						</div>
 						<div>
-							<label for="next-stem-input" class="block font-medium text-stone-700 mb-1">
+							<label for="next-stem-input" class="mb-1 block font-medium text-stone-700">
 								Stem Sesudahnya (➡️):
 							</label>
 							<input
@@ -742,14 +841,14 @@
 								class="w-full rounded-lg border-stone-300 bg-white px-3 py-1.5 font-mono text-xs shadow-xs focus:border-teal-600 focus:ring-teal-600"
 							/>
 						</div>
-						<div class="sm:col-span-2 flex justify-end">
+						<div class="flex justify-end sm:col-span-2">
 							<button
 								type="button"
 								onclick={() => {
 									prevStem = data.defaultPrevStem;
 									nextStem = data.defaultNextStem;
 								}}
-								class="text-xs text-stone-500 hover:text-stone-800 underline"
+								class="text-xs text-stone-500 underline hover:text-stone-800"
 							>
 								Reset ke Nilai Standar Kalender
 							</button>
@@ -761,7 +860,7 @@
 	</Tabs.Root>
 
 	<!-- Desktop Actions Bar -->
-	<div class="hidden sm:flex flex-wrap items-center gap-2.5 border-t border-stone-200/80 pt-4">
+	<div class="hidden flex-wrap items-center gap-2.5 border-t border-stone-200/80 pt-4 sm:flex">
 		<button
 			onclick={saveToDb}
 			disabled={saving || !dirtyLocal}
@@ -775,18 +874,28 @@
 			class="inline-flex items-center gap-2 rounded-xl bg-teal-800 px-5 py-2.5 text-sm font-semibold text-white shadow-sm hover:bg-teal-700 active:scale-95 disabled:opacity-50"
 		>
 			{#if pushing}
-				<span class="size-3.5 animate-spin rounded-full border-2 border-white border-t-transparent"></span>
+				<span class="size-3.5 animate-spin rounded-full border-2 border-white border-t-transparent"
+				></span>
 				<span>Pushing ke GitHub…</span>
 			{:else}
-				<svg xmlns="http://www.w3.org/2000/svg" class="size-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-					<path d="M12 19V5"/>
-					<path d="m5 12 7-7 7 7"/>
+				<svg
+					xmlns="http://www.w3.org/2000/svg"
+					class="size-4"
+					viewBox="0 0 24 24"
+					fill="none"
+					stroke="currentColor"
+					stroke-width="2"
+					stroke-linecap="round"
+					stroke-linejoin="round"
+				>
+					<path d="M12 19V5" />
+					<path d="m5 12 7-7 7 7" />
 				</svg>
 				<span>Push ke GitHub</span>
 			{/if}
 		</button>
 		<a
-			href="/github/{data.note.date}"
+			href={resolve(`/github/${data.note.date}`)}
 			class="rounded-xl border border-stone-300 bg-white px-3.5 py-2.5 text-sm text-stone-600 shadow-xs hover:bg-stone-50"
 		>
 			Lihat di GitHub
@@ -794,7 +903,7 @@
 
 		<Dialog.Root bind:open={deleteOpen}>
 			<Dialog.Trigger
-				class="ml-auto rounded-xl px-3.5 py-2 text-xs font-semibold text-red-700 hover:bg-red-50 transition"
+				class="ml-auto rounded-xl px-3.5 py-2 text-xs font-semibold text-red-700 transition hover:bg-red-50"
 			>
 				Hapus Catatan
 			</Dialog.Trigger>
@@ -804,16 +913,19 @@
 					class="fixed top-1/2 left-1/2 z-50 w-[min(92vw,24rem)] -translate-x-1/2 -translate-y-1/2 rounded-2xl border border-stone-200 bg-white p-6 shadow-xl outline-none"
 				>
 					<Dialog.Title class="text-base font-bold text-stone-900">Hapus daily note?</Dialog.Title>
-					<Dialog.Description class="mt-2 text-xs text-stone-600 leading-relaxed">
-						Note akan dihapus dari database. Jika sudah pernah di-push, file di repository GitHub juga akan dihapus.
+					<Dialog.Description class="mt-2 text-xs leading-relaxed text-stone-600">
+						Note akan dihapus dari database. Jika sudah pernah di-push, file di repository GitHub
+						juga akan dihapus.
 					</Dialog.Description>
 					<div class="mt-5 flex justify-end gap-2">
-						<Dialog.Close class="rounded-xl border border-stone-300 px-4 py-2 text-xs font-medium text-stone-700 hover:bg-stone-50">
+						<Dialog.Close
+							class="rounded-xl border border-stone-300 px-4 py-2 text-xs font-medium text-stone-700 hover:bg-stone-50"
+						>
 							Batal
 						</Dialog.Close>
 						<button
 							onclick={deleteNote}
-							class="rounded-xl bg-red-700 px-4 py-2 text-xs font-semibold text-white hover:bg-red-600 shadow-sm"
+							class="rounded-xl bg-red-700 px-4 py-2 text-xs font-semibold text-white shadow-sm hover:bg-red-600"
 						>
 							Hapus Sekarang
 						</button>
@@ -825,13 +937,17 @@
 
 	<!-- Status Feedback Toast -->
 	{#if status}
-		<div class="rounded-xl border border-stone-200 bg-white p-3.5 text-xs text-stone-700 shadow-sm leading-relaxed">
+		<div
+			class="rounded-xl border border-stone-200 bg-white p-3.5 text-xs leading-relaxed text-stone-700 shadow-sm"
+		>
 			{status}
 		</div>
 	{/if}
 
 	<!-- Sticky Mobile Bottom Bar (Thumb-Friendly on Phones) -->
-	<div class="sm:hidden fixed bottom-0 left-0 right-0 z-30 border-t border-stone-200 bg-white/95 backdrop-blur-md px-4 py-2.5 shadow-lg flex items-center justify-between gap-2">
+	<div
+		class="fixed right-0 bottom-0 left-0 z-30 flex items-center justify-between gap-2 border-t border-stone-200 bg-white/95 px-4 py-2.5 shadow-lg backdrop-blur-md sm:hidden"
+	>
 		<button
 			onclick={saveToDb}
 			disabled={saving || !dirtyLocal}
@@ -842,10 +958,11 @@
 		<button
 			onclick={pushToGithub}
 			disabled={pushing}
-			class="flex-1 inline-flex items-center justify-center gap-1.5 rounded-xl bg-teal-800 py-2.5 text-xs font-semibold text-white shadow-sm active:bg-teal-900 disabled:opacity-40"
+			class="inline-flex flex-1 items-center justify-center gap-1.5 rounded-xl bg-teal-800 py-2.5 text-xs font-semibold text-white shadow-sm active:bg-teal-900 disabled:opacity-40"
 		>
 			{#if pushing}
-				<span class="size-3 animate-spin rounded-full border-2 border-white border-t-transparent"></span>
+				<span class="size-3 animate-spin rounded-full border-2 border-white border-t-transparent"
+				></span>
 				<span>Pushing…</span>
 			{:else}
 				<span>Push GitHub</span>
@@ -856,10 +973,19 @@
 			class="rounded-xl px-2.5 py-2.5 text-xs text-red-600 hover:bg-red-50"
 			aria-label="Hapus"
 		>
-			<svg xmlns="http://www.w3.org/2000/svg" class="size-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-				<path d="M3 6h18"/>
-				<path d="M19 6v14c0 1-1 2-2 2H7c-1 0-2-1-2-2V6"/>
-				<path d="M8 6V4c0-1 1-2 2-2h4c1 0 2 1 2 2v2"/>
+			<svg
+				xmlns="http://www.w3.org/2000/svg"
+				class="size-4"
+				viewBox="0 0 24 24"
+				fill="none"
+				stroke="currentColor"
+				stroke-width="2"
+				stroke-linecap="round"
+				stroke-linejoin="round"
+			>
+				<path d="M3 6h18" />
+				<path d="M19 6v14c0 1-1 2-2 2H7c-1 0-2-1-2-2V6" />
+				<path d="M8 6V4c0-1 1-2 2-2h4c1 0 2 1 2 2v2" />
 			</svg>
 		</button>
 	</div>
